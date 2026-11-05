@@ -40,8 +40,6 @@ Windows 11 x64。配布版には.NETランタイムを同梱しています。�
 - Windows上でメイン画面とエージェント画像一覧の表示を確認。
 - **実アカウントのログイン完了、別PCの実試合検知・選択・確定、長時間のセッション更新は未確認です。** 初回は自身のカスタムゲーム等で確認してください。
 
-APKの解析内容と限界は `analysis/APK_ANALYSIS.md` を参照してください。
-
 ## Visual Studioで開く
 
 プロジェクト直下の `ValoAutoPick.sln` を開きます。アプリのソースは `src/ValoAutoPick/` にあります。Visual Studio 2022以降と.NET 9 SDK、Windows Formsの開発機能が必要です。
