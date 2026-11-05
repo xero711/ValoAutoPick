@@ -1,11 +1,15 @@
+using System.Diagnostics;
+
 namespace ValoAutoPick;
 
 // One serial worker owns this state. No overlapping polling or write requests.
 public sealed class PickEngine(IGameApi api, Action<string> report)
 {
+    private static readonly TimeSpan PickDelay = TimeSpan.FromSeconds(3);
     private readonly HashSet<string> completed = [];
     private readonly Queue<string> history = [];
     private string? current;
+    private DateTimeOffset pickAt;
     private int attempts;
 
     private void Complete(string id)
@@ -17,14 +21,18 @@ public sealed class PickEngine(IGameApi api, Action<string> report)
 
     public async Task Tick(Settings settings, DateTimeOffset now, CancellationToken ct)
     {
+        var pollStarted = Stopwatch.GetTimestamp();
         var id = await api.GetMatchId(ct);
+        var observedAt = now + Stopwatch.GetElapsedTime(pollStarted);
         if (id == null) { report("マッチを検索中"); return; }
         if (completed.Contains(id)) { report("この試合の処理は完了 · 次の試合も自動で検知します"); return; }
         if (current != id)
         {
-            current = id; attempts = 0;
-            report("マッチを検知 · キャラ選択を確認中");
+            current = id; attempts = 0; pickAt = observedAt + PickDelay;
+            report("マッチを検知 · 3秒後に自動ピックします");
         }
+        if (observedAt < pickAt) return;
+
         var match = await api.GetMatch(id, ct);
         if (match.Id != id || match.State != "character_select_active") return;
         var self = match.Allies.FirstOrDefault(p => p.Subject == api.Subject);

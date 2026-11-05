@@ -23,7 +23,7 @@ public static class AuthFlow
     public static string Url(string state, bool silent) =>
         "https://auth.riotgames.com/authorize?redirect_uri=https%3A%2F%2Fplayvalorant.com%2Fopt_in" +
         "&client_id=play-valorant-web-prod&response_type=token%20id_token&scope=account%20openid" +
-        "&nonce=" + NewState() + "&state=" + Uri.EscapeDataString(state) + (silent ? "&prompt=none" : "&prompt=login") + "&ui_locales=ja-JP";
+        "&nonce=" + NewState() + "&state=" + Uri.EscapeDataString(state) + (silent ? "&prompt=none" : "") + "&ui_locales=ja-JP";
     public static bool IsCallback(Uri uri) => uri.Scheme == "https" && uri.Host == "playvalorant.com" && uri.IsDefaultPort && uri.AbsolutePath == "/opt_in";
     public static AuthResult ParseCallback(Uri uri, string state, DateTimeOffset now)
     {

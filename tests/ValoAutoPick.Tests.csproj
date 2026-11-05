@@ -6,5 +6,7 @@
     <Compile Include="../src/ValoAutoPick/AutoQueueEngine.cs" Link="AutoQueueEngine.cs" />
     <Compile Include="../src/ValoAutoPick/AuthFlow.cs" Link="AuthFlow.cs" />
     <Compile Include="../src/ValoAutoPick/RiotApi.cs" Link="RiotApi.cs" />
+    <Compile Include="../src/ValoAutoPick/RiotLocalEvents.cs" Link="RiotLocalEvents.cs" />
+    <Compile Include="../src/ValoAutoPick/NotificationRelay.cs" Link="NotificationRelay.cs" />
   </ItemGroup>
 </Project>

@@ -7,7 +7,9 @@ try {
     dotnet publish src/ValoAutoPick/ValoAutoPick.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -o dist/ValoAutoPick-smooth-corners
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
     Copy-Item -LiteralPath README.md -Destination dist/ValoAutoPick-smooth-corners/README.md -Force
-    Copy-Item -LiteralPath THIRD-PARTY-NOTICES.md -Destination dist/ValoAutoPick-smooth-corners/THIRD-PARTY-NOTICES.md -Force
+    if (Test-Path -LiteralPath THIRD-PARTY-NOTICES.md) {
+        Copy-Item -LiteralPath THIRD-PARTY-NOTICES.md -Destination dist/ValoAutoPick-smooth-corners/THIRD-PARTY-NOTICES.md -Force
+    }
     Copy-Item -LiteralPath analysis/APK_ANALYSIS.md -Destination dist/ValoAutoPick-smooth-corners/APK_ANALYSIS.md -Force
     $packageRoot = Join-Path $env:USERPROFILE '.nuget\packages'
     $assetsPath = Join-Path $projectRoot 'src/ValoAutoPick/obj/project.assets.json'

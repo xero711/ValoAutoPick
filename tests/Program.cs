@@ -8,63 +8,74 @@ tests.Add(("idle never selects", async () => { var api = new Fake { MatchId = nu
 tests.Add(("two consecutive matches and duplicate suppression", async () =>
 {
     var api = new Fake(); var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default); Equal(1, api.Locks);
-    api.SelfState = ""; await engine.Tick(Config(), now.AddSeconds(1), default); Equal(1, api.Locks);
-    api.MatchId = null; await engine.Tick(Config(), now.AddSeconds(2), default);
-    api.MatchId = "match-2"; await engine.Tick(Config(), now.AddSeconds(3), default); Equal(2, api.Locks);
-    api.MatchId = "match-1"; api.SelfState = ""; await engine.Tick(Config(), now.AddSeconds(4), default); Equal(2, api.Locks);
+    await engine.Tick(Config(), now, default); Equal(0, api.Locks);
+    await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(1, api.Locks);
+    api.SelfState = ""; await engine.Tick(Config(), now.AddSeconds(4), default); Equal(1, api.Locks);
+    api.MatchId = null; await engine.Tick(Config(), now.AddSeconds(5), default);
+    api.MatchId = "match-2"; await engine.Tick(Config(), now.AddSeconds(6), default); Equal(1, api.Locks);
+    await engine.Tick(Config(), now.AddSeconds(9.1), default); Equal(2, api.Locks);
+    api.MatchId = "match-1"; api.SelfState = ""; await engine.Tick(Config(), now.AddSeconds(10), default); Equal(2, api.Locks);
 }));
-tests.Add(("selected agent is picked immediately", async () =>
+tests.Add(("selected agent is picked after the three second delay", async () =>
 {
     var api = new Fake(); var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default); Equal(1, api.Selects); Equal(1, api.Locks);
-    await engine.Tick(Config(), now.AddMilliseconds(100), default); Equal(1, api.Selects); Equal(1, api.Locks);
+    await engine.Tick(Config(), now, default);
+    await engine.Tick(Config(), now.AddSeconds(2.9), default); Equal(0, api.Selects); Equal(0, api.Locks);
+    await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(1, api.Selects); Equal(1, api.Locks);
+    await engine.Tick(Config(), now.AddSeconds(3.2), default); Equal(1, api.Selects); Equal(1, api.Locks);
 }));
 tests.Add(("a teammate picking the configured agent requires manual action", async () =>
 {
     var api = new Fake { Others = [new("other", "agent-a", "locked")] };
-    await new PickEngine(api, _ => { }).Tick(Config(), now, default); Equal(0, api.Selects); Equal(0, api.Locks);
+    var engine = new PickEngine(api, _ => { });
+    await engine.Tick(Config(), now, default); await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(0, api.Selects); Equal(0, api.Locks);
 }));
 tests.Add(("taken agents are retried when freed", async () =>
 {
     var api = new Fake { Others = [new("other", "agent-a", "locked")] }; var config = Config();
-    var engine = new PickEngine(api, _ => { }); await engine.Tick(config, now, default); Equal(0, api.Selects);
-    api.Others = []; await engine.Tick(config, now, default); Equal(1, api.Locks);
+    var engine = new PickEngine(api, _ => { }); await engine.Tick(config, now, default);
+    await engine.Tick(config, now.AddSeconds(3.1), default); Equal(0, api.Selects);
+    api.Others = []; await engine.Tick(config, now.AddSeconds(3.2), default); Equal(1, api.Locks);
 }));
-tests.Add(("manual lock is preserved", async () => { var api = new Fake { SelfState = "locked", Selected = "manual" }; await new PickEngine(api, _ => { }).Tick(Config(), now, default); Equal(0, api.Selects); Equal("manual", api.Selected); }));
-tests.Add(("select and lock immediately", async () => { var api = new Fake(); var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default); await engine.Tick(Config(), now, default); Equal(1, api.Selects); Equal(1, api.Locks); }));
+tests.Add(("manual lock is preserved", async () => { var api = new Fake { SelfState = "locked", Selected = "manual" }; var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default); await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(0, api.Selects); Equal("manual", api.Selected); }));
+tests.Add(("select and lock in the same check after the delay", async () => { var api = new Fake(); var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default); await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(1, api.Selects); Equal(1, api.Locks); }));
 tests.Add(("inactive or missing self never writes", async () =>
 {
-    var api = new Fake { State = "provisioned" }; var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default); Equal(0, api.Selects);
-    api.State = "character_select_active"; api.IncludeSelf = false; await engine.Tick(Config(), now, default); Equal(0, api.Selects);
+    var api = new Fake { State = "provisioned" }; var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default);
+    await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(0, api.Selects);
+    api.State = "character_select_active"; api.IncludeSelf = false; await engine.Tick(Config(), now.AddSeconds(3.2), default); Equal(0, api.Selects);
 }));
 tests.Add(("rejected agent is reported without selecting a different agent", async () =>
 {
     var api = new Fake { RejectAgent = "agent-a" }; var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default); await engine.Tick(Config(), now, default); Equal("", api.Selected); Equal(0, api.Locks); Equal(1, api.Selects);
+    await engine.Tick(Config(), now, default); await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal("", api.Selected); Equal(0, api.Locks); Equal(1, api.Selects);
 }));
 tests.Add(("cancel after selection prevents lock", async () =>
 {
     using var cts = new CancellationTokenSource(); var api = new Fake { AfterSelect = cts.Cancel }; var engine = new PickEngine(api, _ => { });
-    try { await engine.Tick(Config(), now, cts.Token); throw new Exception("Should cancel"); } catch (OperationCanceledException) { }
+    await engine.Tick(Config(), now, cts.Token);
+    try { await engine.Tick(Config(), now.AddSeconds(3.1), cts.Token); throw new Exception("Should cancel"); } catch (OperationCanceledException) { }
     Equal(0, api.Locks);
 }));
 tests.Add(("lock response lost is not sent twice", async () =>
 {
     var api = new Fake { LoseLockResponse = true }; var engine = new PickEngine(api, _ => { });
-    try { await engine.Tick(Config(), now, default); } catch (HttpRequestException) { }
-    await engine.Tick(Config(), now, default); Equal(1, api.Locks);
+    await engine.Tick(Config(), now, default);
+    try { await engine.Tick(Config(), now.AddSeconds(3.1), default); } catch (HttpRequestException) { }
+    await engine.Tick(Config(), now.AddSeconds(3.2), default); Equal(1, api.Locks);
 }));
 tests.Add(("write retries are bounded", async () =>
 {
     var api = new Fake { SelectError = 500 }; var engine = new PickEngine(api, _ => { });
-    for (var i = 0; i < 12; i++) try { await engine.Tick(Config(), now, default); } catch (ApiException) { }
+    await engine.Tick(Config(), now, default);
+    for (var i = 0; i < 12; i++) try { await engine.Tick(Config(), now.AddSeconds(3.1).AddMilliseconds(i * 10), default); } catch (ApiException) { }
     Equal(6, api.Selects); Equal(0, api.Locks);
 }));
 tests.Add(("rate limit is surfaced for worker backoff", async () =>
 {
-    var api = new Fake { SelectError = 429 };
-    try { await new PickEngine(api, _ => { }).Tick(Config(), now, default); throw new Exception("Expected rate limit"); }
+    var api = new Fake { SelectError = 429 }; var engine = new PickEngine(api, _ => { });
+    await engine.Tick(Config(), now, default);
+    try { await engine.Tick(Config(), now.AddSeconds(3.1), default); throw new Exception("Expected rate limit"); }
     catch (ApiException e) { Equal(429, e.Status); }
     Equal(1, api.Selects);
 }));
@@ -75,6 +86,92 @@ tests.Add(("auto queue joins only the selected eligible queue from the idle lobb
     await engine.Tick(now.AddSeconds(1), default); Equal(1, api.Joins);
     await engine.Tick(now.AddSeconds(3), default); Equal(1, api.Joins);
     await engine.LeaveActiveQueue(default); Equal(1, api.Leaves); Equal("DEFAULT", api.Snapshot.State);
+}));
+tests.Add(("party notification checks immediately and joins only after returning to an eligible lobby", async () =>
+{
+    var api = new FakeQueue(); var engine = new AutoQueueEngine(api, _ => { });
+    api.Snapshot = api.Snapshot with { State = "IN_GAME" };
+    await engine.Tick(now, default); Equal(0, api.Joins);
+    await engine.Tick(now.AddMilliseconds(50), default, stateChanged: true); Equal(0, api.Joins);
+    api.Snapshot = api.Snapshot with { State = "DEFAULT" };
+    await engine.Tick(now.AddMilliseconds(100), default); Equal(0, api.Joins);
+    await engine.Tick(now.AddMilliseconds(100), default, stateChanged: true); Equal(1, api.Joins);
+    api.Snapshot = api.Snapshot with { State = "DEFAULT" }; // A stale update must not send the join twice.
+    await engine.Tick(now.AddMilliseconds(200), default, stateChanged: true); Equal(1, api.Joins);
+}));
+tests.Add(("stopping auto queue while fetching state prevents a notification-triggered join", async () =>
+{
+    var enabled = true;
+    var api = new FakeQueue { OnSnapshot = () => enabled = false };
+    await new AutoQueueEngine(api, _ => { }).Tick(now, default, stateChanged: true, enabled: () => enabled);
+    Equal(0, api.Joins);
+}));
+tests.Add(("only relevant local events wake the queue monitor", () =>
+{
+    const string subject = "11111111-1111-1111-1111-111111111111";
+    string? lastPresence = null;
+    byte[] Frame(string uri, object data) => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new object[] { 8, "OnJsonApiEvent", new { uri, data } });
+    string Encode(string state) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{{\"sessionLoopState\":\"{state}\",\"partyState\":\"DEFAULT\"}}"));
+    var other = Frame("/chat/v4/presences", new { puuid = "22222222-2222-2222-2222-222222222222", product = "valorant", @private = Encode("MENUS") });
+    Equal(RiotLocalEvents.Notification.None, RiotLocalEvents.Classify(other, subject, ref lastPresence));
+    var own = Frame("/chat/v4/presences", new { puuid = subject, product = "valorant", @private = Encode("INGAME") });
+    Equal(RiotLocalEvents.Notification.QueueChanged, RiotLocalEvents.Classify(own, subject, ref lastPresence));
+    Equal(RiotLocalEvents.Notification.None, RiotLocalEvents.Classify(own, subject, ref lastPresence));
+    var lobby = Frame("/chat/v4/presences", new { puuid = subject, product = "valorant", @private = Encode("MENUS") });
+    Equal(RiotLocalEvents.Notification.QueueChanged, RiotLocalEvents.Classify(lobby, subject, ref lastPresence));
+    var party = Frame("/riot-messaging-service/v1/message/ares-parties/parties/v1/parties/id", new { });
+    Equal(RiotLocalEvents.Notification.QueueChanged, RiotLocalEvents.Classify(party, subject, ref lastPresence));
+    var relativeParty = Frame("/riot-messaging-service/v1/message", new { resource = "parties/v1/parties/id" });
+    Equal(RiotLocalEvents.Notification.QueueChanged, RiotLocalEvents.Classify(relativeParty, subject, ref lastPresence));
+    return Task.CompletedTask;
+}));
+tests.Add(("LAN relay authenticates the account and forwards a state change", async () =>
+{
+    const string subject = "11111111-1111-1111-1111-111111111111";
+    var code = RelayProtocol.NewCode();
+    Equal(true, RelayProtocol.TryParseCode(code, out var key));
+    Equal(false, RelayProtocol.TryParseCode("1234", out _));
+    using var server = new NotificationRelayServer(System.Net.IPAddress.Loopback, 0, key);
+    server.SetSubject(subject); server.Start();
+    using var cts = new CancellationTokenSource();
+    var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var next = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var events = 0; var connected = false;
+    var listener = NotificationRelayClient.Listen(new RelayOptions(System.Net.IPAddress.Loopback, key, server.Port), () => subject,
+        () => { if (Interlocked.Increment(ref events) == 1) first.TrySetResult(); else next.TrySetResult(); },
+        state => { if (state) connected = true; else if (connected) disconnected.TrySetResult(); }, cts.Token);
+    await first.Task.WaitAsync(TimeSpan.FromSeconds(3));
+    server.Publish(subject);
+    await next.Task.WaitAsync(TimeSpan.FromSeconds(3));
+    server.SetSubject("22222222-2222-2222-2222-222222222222");
+    await disconnected.Task.WaitAsync(TimeSpan.FromSeconds(3));
+    cts.Cancel();
+    try { await listener; } catch (OperationCanceledException) { }
+}));
+tests.Add(("LAN relay proof rejects a different account or pairing code", () =>
+{
+    var nonce1 = new byte[32]; var nonce2 = new byte[32];
+    var key = new byte[16]; var wrongKey = new byte[16]; wrongKey[0] = 1;
+    var proof = RelayProtocol.Mac(key, "server", nonce1, nonce2, "11111111-1111-1111-1111-111111111111");
+    Equal(false, System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(proof, RelayProtocol.Mac(wrongKey, "server", nonce1, nonce2, "11111111-1111-1111-1111-111111111111")));
+    Equal(false, System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(proof, RelayProtocol.Mac(key, "server", nonce1, nonce2, "22222222-2222-2222-2222-222222222222")));
+    return Task.CompletedTask;
+}));
+tests.Add(("LAN relay closes a connection with an incorrect code", async () =>
+{
+    const string subject = "11111111-1111-1111-1111-111111111111";
+    var key = new byte[16]; var wrongKey = new byte[16]; wrongKey[0] = 1;
+    using var server = new NotificationRelayServer(System.Net.IPAddress.Loopback, 0, key);
+    server.SetSubject(subject); server.Start();
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+    using var client = new System.Net.Sockets.TcpClient();
+    await client.ConnectAsync(System.Net.IPAddress.Loopback, server.Port, timeout.Token);
+    var stream = client.GetStream(); var clientNonce = new byte[32]; var serverNonce = new byte[32]; var proof = new byte[32];
+    await stream.WriteAsync(clientNonce, timeout.Token);
+    await stream.ReadExactlyAsync(serverNonce, timeout.Token); await stream.ReadExactlyAsync(proof, timeout.Token);
+    await stream.WriteAsync(RelayProtocol.Mac(wrongKey, "client", clientNonce, serverNonce, subject), timeout.Token);
+    Equal(0, await stream.ReadAsync(new byte[1], timeout.Token));
 }));
 tests.Add(("auto queue stop leaves an active search but not a found match or another leader's queue", async () =>
 {
@@ -260,7 +357,8 @@ sealed class FakeQueue : IQueueApi
     public PartyQueueSnapshot Snapshot = new("44444444-4444-4444-4444-444444444444", "DEFAULT", "competitive", true, 0, ["competitive", "unrated"], []);
     public int Joins, Leaves;
     public string JoinedParty = "";
-    public Task<PartyQueueSnapshot> GetQueueSnapshot(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(Snapshot); }
+    public Action? OnSnapshot;
+    public Task<PartyQueueSnapshot> GetQueueSnapshot(CancellationToken ct) { ct.ThrowIfCancellationRequested(); OnSnapshot?.Invoke(); return Task.FromResult(Snapshot); }
     public Task EnterQueue(string partyId, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested(); Joins++; JoinedParty = partyId; Snapshot = Snapshot with { State = "MATCHMAKING" }; return Task.CompletedTask;

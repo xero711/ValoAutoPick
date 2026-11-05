@@ -1,6 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace ValoAutoPick;
 
@@ -20,6 +21,7 @@ public sealed class MainWindow : DarkForm
     private readonly ThemedButton login = new() { Text = "Riotにログイン", Size = new(196, 48), Compact = true };
     // Leave enough horizontal room for Japanese glyphs plus the button's text padding.
     private readonly ThemedButton logout = new() { Text = "ログアウト", Size = new(132, 48), Compact = true };
+    private readonly ThemedButton relayConfig = new() { Text = "通知連携", Size = new(160, 48), Compact = true };
     private readonly ThemedButton start = new() { Text = "監視を開始", Primary = true, Font = new Font("Yu Gothic UI", 17f, FontStyle.Bold) };
     private readonly ThemedButton autoQueue = new() { Text = "自動インキュー開始", Font = new Font("Yu Gothic UI", 15f, FontStyle.Bold), AccessibleDescription = "ゲーム内で選択中のモードに自動で参加します" };
     private readonly HeroPanel hero = new();
@@ -39,6 +41,7 @@ public sealed class MainWindow : DarkForm
     private Task? queueLeaveTask;
     private PickEngine? engine;
     private AutoQueueEngine? queueEngine;
+    private RelayOptions? relayOptions;
     private string engineSubject = "", lastStatus = "", lastQueueStatus = "";
     private bool closing, busy, stopping, pickMonitoring, autoQueueActive;
     private Panel? statusLed;
@@ -94,8 +97,9 @@ public sealed class MainWindow : DarkForm
         logout.Click += async (_, _) => await SignOut();
         start.Click += async (_, _) => await TogglePickMonitoring();
         autoQueue.Click += async (_, _) => await ToggleAutoQueue();
-        mode.SelectedIndexChanged += async (_, _) => { SaveSettings(); await SignOut(); UpdateConnectionUi(); };
-        region.SelectedIndexChanged += async (_, _) => { SaveSettings(); if (api.HasAccountSession) await SignOut(); };
+        relayConfig.Click += (_, _) => ConfigureRelay();
+        mode.SelectedIndexChanged += async (_, _) => { SaveSettings(); await SignOut(clearBrowserSession: false); UpdateConnectionUi(); };
+        region.SelectedIndexChanged += async (_, _) => { SaveSettings(); if (api.HasAccountSession) await SignOut(clearBrowserSession: false); };
         autoStart.CheckedChanged += (_, _) => SaveSettings();
         Resize += (_, _) => { if (WindowState == FormWindowState.Minimized) { Hide(); tray.ShowBalloonTip(1500, "Valo Auto Pick", monitor != null ? autoQueueActive ? "自動インキューを監視中です" : "自動ピックを監視中です" : "監視は停止中です", ToolTipIcon.Info); } };
         tray.DoubleClick += (_, _) => Restore();
@@ -146,7 +150,9 @@ public sealed class MainWindow : DarkForm
                 using (var graphics = Graphics.FromImage(bitmap)) graphics.CopyFromScreen(Location, Point.Empty, Size);
                 bitmap.Save(smokePath); Close();
             }
-            else if (config.StartOnLaunch && !config.AccountMode && !string.IsNullOrEmpty(config.AgentId))
+            else if (config.AccountMode)
+                await RestoreAccountSession(config);
+            else if (config.StartOnLaunch && !string.IsNullOrEmpty(config.AgentId))
             { pickMonitoring = true; StartMonitor(); }
         };
         FormClosing += async (_, e) =>
@@ -191,7 +197,8 @@ public sealed class MainWindow : DarkForm
         brand.Controls.Add(new Label { Text = "VALBUDDY", ForeColor = Theme.Text, Font = new Font("Segoe UI", 20, FontStyle.Bold), AutoSize = true, Location = new Point(48, 2) });
         var loginBar = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(0, 5, 0, 0), Margin = Padding.Empty };
         logout.Margin = new Padding(8, 0, 0, 0); login.Margin = Padding.Empty;
-        loginBar.Controls.Add(login); loginBar.Controls.Add(logout);
+        relayConfig.Margin = new Padding(0, 0, 8, 0);
+        loginBar.Controls.Add(relayConfig); loginBar.Controls.Add(login); loginBar.Controls.Add(logout);
         header.Controls.Add(brand, 0, 0); header.Controls.Add(loginBar, 1, 0);
         return header;
     }
@@ -273,6 +280,14 @@ public sealed class MainWindow : DarkForm
         mainAgent = string.IsNullOrWhiteSpace(config.AgentId) ? null : Find(config.AgentId);
     }
     private void SetHero() { hero.Agent = mainAgent; }
+    private void ConfigureRelay()
+    {
+        using var dialog = new NotificationRelayDialog();
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (dialog.ClearRelay) relayOptions = null;
+        else if (dialog.SelectedRelay != null) relayOptions = dialog.SelectedRelay;
+        relayConfig.Text = relayOptions == null ? "通知連携" : "通知連携: 設定済";
+    }
     private void PickAgent()
     {
         using var dialog = new AgentPickerDialog(agents, mainAgent?.Id);
@@ -305,6 +320,7 @@ public sealed class MainWindow : DarkForm
         login.Visible = accountMode;
         login.Enabled = accountMode && !busy && monitor == null && !api.HasAccountSession;
         logout.Visible = accountMode && api.HasAccountSession;
+        relayConfig.Enabled = monitor == null && !busy && !closing && !stopping;
         mode.Enabled = monitor == null && !busy;
         accountInfo.Text = accountMode ? api.HasAccountSession ? $"{api.AccountName}  ·  {api.RegionLabel}" : "Riotアカウント未接続" : "このPCのRiot Clientを使用";
         login.AccessibleName = api.HasAccountSession ? $"接続済み: {api.AccountName} / {api.RegionLabel}" : "Riotアカウントにログイン";
@@ -338,11 +354,41 @@ public sealed class MainWindow : DarkForm
         if (api.HasAccountSession && autoStart.Checked) { pickMonitoring = true; StartMonitor(); }
     }
 
-    private async Task SignOut()
+    private async Task RestoreAccountSession(Settings config)
+    {
+        if (busy || closing || lifetime.IsCancellationRequested) return;
+        if (!Directory.Exists(LoginWindow.ProfileFolder)) return;
+        busy = true; SetInputEnabled(false); UpdateConnectionUi();
+        Report("保存済みのRiotログインを確認中");
+        try
+        {
+            loginWindow ??= new LoginWindow();
+            var result = await loginWindow.Authenticate(this, true, lifetime.Token);
+            if (result == null)
+            {
+                Report("保存済みログインを復元できません · Riotにログインしてください");
+                return;
+            }
+            await api.Login(result, config.Region, lifetime.Token);
+            Report("前回のRiotログインを復元しました");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception e) { Report(LoginError(e)); }
+        finally { busy = false; SetInputEnabled(true); UpdateConnectionUi(); }
+
+        if (api.HasAccountSession && config.StartOnLaunch && !string.IsNullOrEmpty(config.AgentId))
+        { pickMonitoring = true; StartMonitor(); }
+    }
+
+    private async Task SignOut(bool clearBrowserSession = true)
     {
         if (busy) return;
         busy = true;
-        try { await StopMonitor(); api.Logout(); engine = null; engineSubject = ""; if (loginWindow != null) await loginWindow.ClearSession(); }
+        try
+        {
+            await StopMonitor(); api.Logout(); engine = null; engineSubject = "";
+            if (clearBrowserSession && loginWindow != null) await loginWindow.ClearSession();
+        }
         catch { Report("ログイン情報を消去できませんでした · アプリを終了してください"); }
         finally { busy = false; UpdateConnectionUi(); }
     }
@@ -415,6 +461,53 @@ public sealed class MainWindow : DarkForm
     private async Task RunMonitor(Settings settings, CancellationToken ct)
     {
         Report("マッチを検索中");
+        using var notificationsStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var queueSignals = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
+        Task? notifications = null;
+        Task? relayNotifications = null;
+        Task? notificationChecks = null;
+        var retryAfter = DateTimeOffset.MinValue;
+        void Backoff(int milliseconds)
+        {
+            var until = DateTimeOffset.UtcNow.AddMilliseconds(milliseconds);
+            if (until > retryAfter) retryAfter = until;
+        }
+        void QueueChanged()
+        {
+            if (!autoQueueActive) return;
+            queueSignals.Writer.TryWrite(true);
+        }
+        async Task WaitForRetry(CancellationToken token)
+        {
+            while (true)
+            {
+                var remaining = retryAfter - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero) return;
+                await Task.Delay(remaining, token);
+            }
+        }
+        async Task ProcessQueueNotifications()
+        {
+            while (await queueSignals.Reader.WaitToReadAsync(notificationsStop.Token))
+            {
+                while (queueSignals.Reader.TryRead(out _)) { }
+                await WaitForRetry(notificationsStop.Token);
+                if (!autoQueueActive || queueEngine == null) continue;
+                try { await queueEngine.Tick(DateTimeOffset.UtcNow, notificationsStop.Token, stateChanged: true, enabled: () => autoQueueActive); }
+                catch (ClientUnavailableException e) { SetQueueStatus(e.Message); Backoff(ClientUnavailableIntervalMilliseconds); }
+                catch (ApiException e)
+                {
+                    if (e.Status is 401 or 403 && settings.AccountMode) { api.Logout(); Report("ログインが失効しました"); monitor?.Cancel(); return; }
+                    var message = e.Status == 429 ? "混雑中 · 自動で再接続します" : "接続を再確認中";
+                    SetQueueStatus(message);
+                    Backoff(e.Status == 429 ? e.RetrySeconds * 1000 : TransientFailureIntervalMilliseconds);
+                }
+                catch (OperationCanceledException) when (!notificationsStop.IsCancellationRequested) { SetQueueStatus("タイムアウト · 再接続中"); Backoff(TransientFailureIntervalMilliseconds); }
+                catch (HttpRequestException) { SetQueueStatus("ネットワークを再確認中"); Backoff(TransientFailureIntervalMilliseconds); }
+                catch (Exception e) when (e is JsonException or InvalidDataException or KeyNotFoundException)
+                { SetQueueStatus("ゲームの応答を確認できません"); Backoff(10000); }
+            }
+        }
         try
         {
             while (!ct.IsCancellationRequested && (pickMonitoring || autoQueueActive))
@@ -422,6 +515,7 @@ public sealed class MainWindow : DarkForm
                 var interval = pickMonitoring ? FastPollIntervalMilliseconds : ClientUnavailableIntervalMilliseconds;
                 try
                 {
+                    await WaitForRetry(ct);
                     if (settings.AccountMode)
                     {
                         if (DateTimeOffset.UtcNow >= api.ExpiresAt.AddMinutes(-3))
@@ -433,12 +527,22 @@ public sealed class MainWindow : DarkForm
                         }
                     }
                     else await api.EnsureConnected(settings.Region, ct);
+                    if (autoQueueActive && notifications == null)
+                    {
+                        notificationChecks = ProcessQueueNotifications();
+                        notifications = RiotLocalEvents.Listen(api, QueueChanged, notificationsStop.Token);
+                        if (relayOptions is { } options)
+                        {
+                            relayNotifications = NotificationRelayClient.Listen(options, () => api.Subject, QueueChanged,
+                                connected => { if (!IsDisposed) relayConfig.Text = connected ? "通知連携: 接続中" : "通知連携: 待機中"; }, notificationsStop.Token);
+                        }
+                    }
                     if (pickMonitoring)
                     {
                         if (engine == null || engineSubject != api.Subject) { engine = new PickEngine(api, Report); engineSubject = api.Subject; }
                         await engine.Tick(settings, DateTimeOffset.UtcNow, ct);
                     }
-                    if (autoQueueActive && queueEngine != null) await queueEngine.Tick(DateTimeOffset.UtcNow, ct);
+                    if (autoQueueActive && queueEngine != null) await queueEngine.Tick(DateTimeOffset.UtcNow, ct, enabled: () => autoQueueActive);
                 }
                 catch (ClientUnavailableException e) { Report(e.Message); if (autoQueueActive) SetQueueStatus(e.Message); interval = ClientUnavailableIntervalMilliseconds; }
                 catch (ApiException e)
@@ -448,6 +552,7 @@ public sealed class MainWindow : DarkForm
                     Report(message);
                     if (autoQueueActive) SetQueueStatus(message);
                     interval = e.Status == 429 ? e.RetrySeconds * 1000 : TransientFailureIntervalMilliseconds;
+                    if (e.Status == 429) Backoff(interval);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { Report("タイムアウト · 再接続中"); if (autoQueueActive) SetQueueStatus("タイムアウト · 再接続中"); interval = TransientFailureIntervalMilliseconds; }
                 catch (HttpRequestException) { Report("ネットワークを再確認中"); if (autoQueueActive) SetQueueStatus("ネットワークを再確認中"); interval = TransientFailureIntervalMilliseconds; }
@@ -460,6 +565,11 @@ public sealed class MainWindow : DarkForm
         catch { Report("監視を停止しました · 再接続してお試しください"); }
         finally
         {
+            notificationsStop.Cancel();
+            if (notifications != null) { try { await notifications; } catch (Exception) { } }
+            if (relayNotifications != null) { try { await relayNotifications; } catch (Exception) { } }
+            if (notificationChecks != null) { try { await notificationChecks; } catch (Exception) { } }
+            relayConfig.Text = relayOptions == null ? "通知連携" : "通知連携: 設定済";
             monitor?.Dispose(); monitor = null;
             monitorTask = null; queueEngine = null; pickMonitoring = false; autoQueueActive = false;
             SetInputEnabled(true);

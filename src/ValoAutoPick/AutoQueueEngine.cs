@@ -5,17 +5,20 @@ public sealed class AutoQueueEngine(IQueueApi api, Action<string> report)
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(8);
     private readonly SemaphoreSlim operationGate = new(1, 1);
     private DateTimeOffset nextCheck;
+    private DateTimeOffset joinPendingUntil;
 
-    public async Task Tick(DateTimeOffset now, CancellationToken ct)
+    public async Task Tick(DateTimeOffset now, CancellationToken ct, bool stateChanged = false, Func<bool>? enabled = null)
     {
         await operationGate.WaitAsync(ct);
-        try { await TickCore(now, ct); }
+        try { await TickCore(now, ct, stateChanged, enabled); }
         finally { operationGate.Release(); }
     }
 
-    private async Task TickCore(DateTimeOffset now, CancellationToken ct)
+    private async Task TickCore(DateTimeOffset now, CancellationToken ct, bool stateChanged, Func<bool>? enabled)
     {
-        if (now < nextCheck) return;
+        if (enabled?.Invoke() == false) return;
+        if (now < joinPendingUntil) return;
+        if (!stateChanged && now < nextCheck) return;
         nextCheck = now + PollInterval;
 
         PartyQueueSnapshot party;
@@ -25,6 +28,11 @@ public sealed class AutoQueueEngine(IQueueApi api, Action<string> report)
         if (party.State == "MATCHMADE_GAME_STARTING")
         {
             report("マッチが見つかりました · ゲーム内で承諾してください");
+            return;
+        }
+        if (party.State == "IN_GAME")
+        {
+            report("試合終了後、すぐにキューへ参加します");
             return;
         }
         if (party.IsInQueue)
@@ -69,10 +77,12 @@ public sealed class AutoQueueEngine(IQueueApi api, Action<string> report)
         }
 
         ct.ThrowIfCancellationRequested();
+        if (enabled?.Invoke() == false) return;
         try
         {
             await api.EnterQueue(party.PartyId, ct);
             nextCheck = now + TimeSpan.FromSeconds(2);
+            joinPendingUntil = nextCheck;
             report("自動でキューに参加しました");
         }
         catch (ApiException e) when (e.Status is 400 or 409)
@@ -100,6 +110,7 @@ public sealed class AutoQueueEngine(IQueueApi api, Action<string> report)
             {
                 report("キャンセル対象の検索はありません");
                 nextCheck = DateTimeOffset.MinValue;
+                joinPendingUntil = DateTimeOffset.MinValue;
                 return;
             }
             if (!party.IsLeader)
@@ -111,6 +122,7 @@ public sealed class AutoQueueEngine(IQueueApi api, Action<string> report)
             ct.ThrowIfCancellationRequested();
             await api.LeaveQueue(party.PartyId, ct);
             nextCheck = DateTimeOffset.MinValue;
+            joinPendingUntil = DateTimeOffset.MinValue;
             report("キュー検索をキャンセルしました");
         }
         finally { operationGate.Release(); }

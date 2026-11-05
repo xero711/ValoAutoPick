@@ -154,6 +154,26 @@ public sealed class RiotApi : IGameApi, IQueueApi, IDisposable
         if (!response.IsSuccessStatusCode) throw new ClientUnavailableException("Riot Clientへのログインを待っています");
         return JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
     }
+    internal async Task<(int Port, string Password, string Subject)?> GetLocalEventConnection(string? expectedSubject, CancellationToken ct)
+    {
+        if (expectedSubject != null && !Guid.TryParse(expectedSubject, out _)) return null;
+        try
+        {
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Riot Games", "Riot Client", "Config", "lockfile");
+            var parts = ReadShared(path, 4096).Trim().Split(':');
+            if (parts.Length != 5 || !int.TryParse(parts[1], out var pid) || !int.TryParse(parts[2], out var port) ||
+                port is < 1 or > 65535 || parts[4] != "https") return null;
+            using var process = Process.GetProcessById(pid);
+            if (!process.ProcessName.StartsWith("RiotClient", StringComparison.OrdinalIgnoreCase)) return null;
+            using var token = await LocalGet(port, parts[3], "/entitlements/v1/token", ct);
+            var subject = Text(token.RootElement, "subject");
+            if (!Guid.TryParse(subject, out _) || (expectedSubject != null && !string.Equals(subject, expectedSubject, StringComparison.OrdinalIgnoreCase))) return null;
+            return (port, parts[3], subject);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or
+            HttpRequestException or ClientUnavailableException or JsonException) { return null; }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return null; }
+    }
     private async Task<JsonDocument?> Request(HttpMethod method, string path, bool missingIsIdle, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(method, server + path);

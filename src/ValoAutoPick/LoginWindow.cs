@@ -21,14 +21,18 @@ public sealed class LoginWindow : DarkForm
     private string state = "";
     private bool silent;
     private bool disposing;
+    public static string ProfileFolder => Path.Combine(Storage.Folder, "LoginBrowser");
+
     public LoginWindow()
     {
         Text = "Riot アカウントでログイン"; Size = new(560, 780); MinimumSize = new(480, 650); StartPosition = FormStartPosition.CenterParent;
         Controls.Add(browser); Controls.Add(status);
         browser.CreationProperties = new CoreWebView2CreationProperties
         {
-            UserDataFolder = Path.Combine(Storage.Folder, "LoginBrowser"),
-            IsInPrivateModeEnabled = true
+            // Keep the Riot web login cookie in WebView2's per-user profile so a
+            // later app launch can silently obtain a fresh short-lived token.
+            UserDataFolder = ProfileFolder,
+            IsInPrivateModeEnabled = false
         };
         FormClosing += (_, e) =>
         {
