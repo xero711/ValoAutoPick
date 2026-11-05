@@ -1,0 +1,9 @@
+<Project>
+  <!-- WebView2 adds a WPF reference even for WinForms apps. Remove it during
+       evaluation so Visual Studio's dependency tree sees the same references
+       as the build, including during design-time builds. -->
+  <ItemGroup>
+    <Reference Remove="@(Reference->WithMetadataValue('Filename', 'Microsoft.Web.WebView2.Wpf'))" />
+  </ItemGroup>
+</Project>
+
