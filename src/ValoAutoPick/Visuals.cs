@@ -773,6 +773,7 @@ public sealed class AgentPickerDialog : DarkForm
     };
     private readonly List<RoleGroup> roleGroups = [];
     private int arrangedWidth = -1;
+    private bool layoutReady;
 
     private sealed record RoleGroup(string Role, Panel Section, Label Heading, TableLayoutPanel Grid, List<AgentTile> Tiles);
 
@@ -799,8 +800,6 @@ public sealed class AgentPickerDialog : DarkForm
             }).ToList();
             foreach (var tile in tiles)
             {
-                // Decode before showing the dialog to avoid a blank first frame.
-                _ = AgentImages.Get(tile.Agent.Id, "icon");
                 tile.AgentClicked += (_, chosen) => { SelectedAgent = chosen; DialogResult = DialogResult.OK; Close(); };
                 tile.Enter += (_, _) => EnsureTileVisible(tile);
             }
@@ -847,9 +846,15 @@ public sealed class AgentPickerDialog : DarkForm
             AttachWheel(group.Section); AttachWheel(group.Heading); AttachWheel(group.Grid);
             foreach (var tile in group.Tiles) AttachWheel(tile);
         }
-        ArrangeTiles();
         KeyPreview = true;
         KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); } };
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        layoutReady = true;
+        ArrangeTiles();
     }
 
     protected override CreateParams CreateParams
@@ -867,7 +872,7 @@ public sealed class AgentPickerDialog : DarkForm
 
     private void ArrangeTiles()
     {
-        if (viewport.ClientSize.Width <= 0 || viewport.ClientSize.Height <= 0) return;
+        if (!layoutReady || viewport.ClientSize.Width <= 0 || viewport.ClientSize.Height <= 0) return;
         groupsHost.Width = viewport.ClientSize.Width;
         var width = Math.Max(1, groupsHost.ClientSize.Width - groupsHost.Padding.Horizontal - UiMetrics.Px(this, 8));
         if (width == arrangedWidth)
@@ -879,6 +884,7 @@ public sealed class AgentPickerDialog : DarkForm
         var columns = Math.Max(1, width / UiMetrics.Px(this, 176));
         var headingHeight = UiMetrics.Px(this, 38);
         var rowHeight = UiMetrics.Px(this, 192);
+        groupsHost.SuspendLayout();
         foreach (var group in roleGroups)
         {
             var rows = (int)Math.Ceiling(group.Tiles.Count / (double)columns);
@@ -902,6 +908,7 @@ public sealed class AgentPickerDialog : DarkForm
             group.Grid.ResumeLayout(true); group.Section.ResumeLayout(true);
         }
         groupsHost.Height = groupsHost.Padding.Vertical + roleGroups.Sum(group => group.Section.Height + group.Section.Margin.Vertical);
+        groupsHost.ResumeLayout(true);
         scrollBar.SetRange(groupsHost.Height, viewport.ClientSize.Height);
         groupsHost.Top = -scrollBar.Value;
     }
