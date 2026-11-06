@@ -117,8 +117,16 @@ internal static class RiotLocalEvents
         try
         {
             using var data = JsonDocument.Parse(Convert.FromBase64String(encoded));
+            if (data.RootElement.ValueKind != JsonValueKind.Object) return false;
             var phase = GetText(data.RootElement, "sessionLoopState");
             var party = GetText(data.RootElement, "partyState");
+            if (phase.Length == 0 && data.RootElement.TryGetProperty("matchPresenceData", out var matchData))
+                phase = GetText(matchData, "sessionLoopState");
+            if (data.RootElement.TryGetProperty("partyPresenceData", out var partyData))
+            {
+                if (party.Length == 0) party = GetText(partyData, "partyState");
+                if (phase.Length == 0) phase = GetText(partyData, "partyOwnerSessionLoopState");
+            }
             if (phase.Length == 0 && party.Length == 0) return false;
             var current = phase + "|" + party;
             if (current == lastPresence) return false;

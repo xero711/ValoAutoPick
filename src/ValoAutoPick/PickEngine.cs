@@ -3,13 +3,13 @@ using System.Diagnostics;
 namespace ValoAutoPick;
 
 // One serial worker owns this state. No overlapping polling or write requests.
-public sealed class PickEngine(IGameApi api, Action<string> report)
+public sealed class PickEngine(IGameApi api, Action<string> report, Func<string, CancellationToken, Task<bool?>>? selectionReady = null)
 {
-    private static readonly TimeSpan PickDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan UnknownReadinessDelay = TimeSpan.FromSeconds(12);
     private readonly HashSet<string> completed = [];
     private readonly Queue<string> history = [];
     private string? current;
-    private DateTimeOffset pickAt;
+    private DateTimeOffset fallbackPickAt;
     private int attempts;
 
     private void Complete(string id)
@@ -28,10 +28,9 @@ public sealed class PickEngine(IGameApi api, Action<string> report)
         if (completed.Contains(id)) { report("この試合の処理は完了 · 次の試合も自動で検知します"); return; }
         if (current != id)
         {
-            current = id; attempts = 0; pickAt = observedAt + PickDelay;
-            report("マッチを検知 · 3秒後に自動ピックします");
+            current = id; attempts = 0; fallbackPickAt = observedAt + UnknownReadinessDelay;
+            report("マッチを検知 · 選択画面を確認中");
         }
-        if (observedAt < pickAt) return;
 
         var match = await api.GetMatch(id, ct);
         if (match.Id != id || match.State != "character_select_active") return;
@@ -46,6 +45,16 @@ public sealed class PickEngine(IGameApi api, Action<string> report)
         var agent = settings.AgentId;
         if (string.IsNullOrWhiteSpace(agent)) { report("エージェントを設定してください"); return; }
         if (taken.Contains(agent)) { report("設定したエージェントは選択済みです · 手動で選択してください"); return; }
+        if (selectionReady != null)
+        {
+            var ready = await selectionReady(id, ct);
+            observedAt = now + Stopwatch.GetElapsedTime(pollStarted);
+            if (ready == false || ready == null && observedAt < fallbackPickAt)
+            {
+                report("選択画面の読み込みを待っています");
+                return;
+            }
+        }
         if (attempts >= 6) { Complete(id); report("この試合の再試行を終了 · ゲーム内で選択してください"); return; }
         ct.ThrowIfCancellationRequested();
         attempts++;
@@ -63,7 +72,7 @@ public sealed class PickEngine(IGameApi api, Action<string> report)
         }
         catch (ApiException e) when (e.Status is 400 or 409)
         {
-            Complete(id); report("エージェントを選べませんでした · 手動で選択してください");
+            report("選択状態を確認して再試行します");
         }
     }
 }

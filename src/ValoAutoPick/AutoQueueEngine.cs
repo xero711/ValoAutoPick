@@ -76,6 +76,11 @@ public sealed class AutoQueueEngine(IQueueApi api, Action<string> report)
             return;
         }
 
+        if (await api.IsInMatch(ct))
+        {
+            report("試合終了後に自動でキューへ参加します");
+            return;
+        }
         ct.ThrowIfCancellationRequested();
         if (enabled?.Invoke() == false) return;
         try
@@ -83,7 +88,7 @@ public sealed class AutoQueueEngine(IQueueApi api, Action<string> report)
             await api.EnterQueue(party.PartyId, ct);
             nextCheck = now + TimeSpan.FromSeconds(2);
             joinPendingUntil = nextCheck;
-            report("自動でキューに参加しました");
+            report("キューへの参加を確認中です");
         }
         catch (ApiException e) when (e.Status is 400 or 409)
         {

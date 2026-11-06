@@ -1,10 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
   <ItemGroup>
+    <Compile Remove="UiMotion/**/*.cs" />
     <Compile Include="../src/ValoAutoPick/Models.cs" Link="Models.cs" />
     <Compile Include="../src/ValoAutoPick/PickEngine.cs" Link="PickEngine.cs" />
     <Compile Include="../src/ValoAutoPick/AutoQueueEngine.cs" Link="AutoQueueEngine.cs" />
     <Compile Include="../src/ValoAutoPick/AuthFlow.cs" Link="AuthFlow.cs" />
+    <Compile Include="../src/ValoAutoPick/SystemBrowserAuth.cs" Link="SystemBrowserAuth.cs" />
+    <Compile Include="../src/ValoAutoPick/IsolatedBrowser.cs" Link="IsolatedBrowser.cs" />
     <Compile Include="../src/ValoAutoPick/RiotApi.cs" Link="RiotApi.cs" />
     <Compile Include="../src/ValoAutoPick/RiotLocalEvents.cs" Link="RiotLocalEvents.cs" />
     <Compile Include="../src/ValoAutoPick/NotificationRelay.cs" Link="NotificationRelay.cs" />

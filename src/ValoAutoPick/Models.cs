@@ -24,7 +24,7 @@ public sealed class Settings
     public string AgentId { get; set; } = "";
     public bool StartOnLaunch { get; set; } = false;
     public string Region { get; set; } = "auto";
-    public bool AccountMode { get; set; } = true;
+    public bool SystemBrowserLogin { get; set; }
     public Settings Normalize()
     {
         if (!Guid.TryParse(AgentId, out _)) AgentId = "";
@@ -70,6 +70,7 @@ public record PartyQueueSnapshot(string PartyId, string State, string QueueId, b
 public interface IQueueApi
 {
     Task<PartyQueueSnapshot> GetQueueSnapshot(CancellationToken ct);
+    Task<bool> IsInMatch(CancellationToken ct);
     Task EnterQueue(string partyId, CancellationToken ct);
     Task LeaveQueue(string partyId, CancellationToken ct);
 }

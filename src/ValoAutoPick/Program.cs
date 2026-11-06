@@ -5,7 +5,10 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        using var mutex = new Mutex(true, "Local\\ValoAutoPick-Desktop-v1", out var first);
+        // Read-only visual previews can run beside the user's active instance.
+        var visualPreview = args.Length >= 2 && args[0] is "--smoke-test" or "--preview-agent" or "--agent-picker-preview";
+        var mutexName = visualPreview ? $"Local\\ValoAutoPick-Preview-{Environment.ProcessId}" : "Local\\ValoAutoPick-Desktop-v1";
+        using var mutex = new Mutex(true, mutexName, out var first);
         if (!first) { MessageBox.Show("Valo Auto Pickはすでに起動しています。通知領域のアイコンから開けます。", "Valo Auto Pick"); return; }
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);

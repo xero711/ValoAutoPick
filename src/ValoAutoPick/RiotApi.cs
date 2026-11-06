@@ -18,12 +18,22 @@ public sealed class RiotApi : IGameApi, IQueueApi, IDisposable
     }) { Timeout = TimeSpan.FromSeconds(4) };
     private string access = "", entitlement = "", version = "", server = "", fingerprint = "";
     private DateTimeOffset refreshed;
+    private DateTimeOffset readinessConnectionCheck;
+    private string readinessSubject = "";
+    private bool readinessLocalAccount;
     public string Subject { get; private set; } = "";
     public string RegionLabel { get; private set; } = "";
     public string AccountName { get; private set; } = "";
     public DateTimeOffset ExpiresAt { get; private set; }
     public bool HasAccountSession { get; private set; }
     public void Invalidate() => refreshed = DateTimeOffset.MinValue;
+
+    public static bool IsValorantRunning()
+    {
+        var processes = Process.GetProcessesByName("VALORANT-Win64-Shipping");
+        try { return processes.Length > 0; }
+        finally { foreach (var process in processes) process.Dispose(); }
+    }
 
     public RiotApi() { }
     internal RiotApi(HttpMessageHandler testTransport)
@@ -80,7 +90,7 @@ public sealed class RiotApi : IGameApi, IQueueApi, IDisposable
         return JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
     }
 
-    public async Task EnsureConnected(string regionSetting, CancellationToken ct)
+    public async Task EnsureConnected(string regionSetting, CancellationToken ct, string? expectedSubject = null)
     {
         var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Riot Games", "Riot Client", "Config", "lockfile");
         string raw;
@@ -97,13 +107,16 @@ public sealed class RiotApi : IGameApi, IQueueApi, IDisposable
         }
         catch (ArgumentException) { throw new ClientUnavailableException("Riot Clientの起動を待っています"); }
         var key = raw + "|" + regionSetting;
-        if (fingerprint == key && DateTimeOffset.UtcNow - refreshed < TimeSpan.FromSeconds(30)) return;
+        if (fingerprint == key && DateTimeOffset.UtcNow - refreshed < TimeSpan.FromSeconds(30) &&
+            (expectedSubject == null || string.Equals(expectedSubject, Subject, StringComparison.OrdinalIgnoreCase))) return;
         using var token = await LocalGet(port, parts[3], "/entitlements/v1/token", ct);
         var subject = token.RootElement.GetProperty("subject").GetString() ?? "";
         var newAccess = token.RootElement.GetProperty("accessToken").GetString() ?? "";
         var newEntitlement = token.RootElement.GetProperty("token").GetString() ?? "";
         if (!Guid.TryParse(subject, out _) || newAccess.Length == 0 || newEntitlement.Length == 0)
             throw new ClientUnavailableException("Riot Clientへのログインを待っています");
+        if (expectedSubject != null && !string.Equals(subject, expectedSubject, StringComparison.OrdinalIgnoreCase))
+            throw new ClientUnavailableException("Riot Clientのアカウントが一致しません");
         using var sessions = await LocalGet(port, parts[3], "/product-session/v1/external-sessions", ct);
         var game = sessions.RootElement.EnumerateObject().Select(x => x.Value)
             .FirstOrDefault(x => Text(x, "productId") == "valorant" && Text(x, "phase") != "Stopped");
@@ -132,6 +145,34 @@ public sealed class RiotApi : IGameApi, IQueueApi, IDisposable
         Subject = subject; access = newAccess; entitlement = newEntitlement; version = clientVersion;
         server = $"https://glz-{region}-1.{shard}.a.pvp.net";
         fingerprint = key; refreshed = DateTimeOffset.UtcNow; RegionLabel = RegionDisplay.Name(region, shard);
+    }
+
+    public async Task<bool> TryRefreshAccountFromLocal(string regionSetting, CancellationToken ct)
+    {
+        if (!HasAccountSession || !Guid.TryParse(Subject, out _)) return false;
+        var expected = Subject;
+        if (await GetLocalEventConnection(expected, ct) == null) return false;
+        try { await EnsureConnected(regionSetting, ct, expected); }
+        catch (ClientUnavailableException) { return false; }
+        var expires = TokenExpiry(access);
+        if (expires == null || expires <= DateTimeOffset.UtcNow.AddMinutes(3)) return false;
+        ExpiresAt = expires.Value;
+        return true;
+    }
+
+    internal static DateTimeOffset? TokenExpiry(string token)
+    {
+        try
+        {
+            var parts = token.Split('.');
+            if (parts.Length != 3) return null;
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight((payload.Length + 3) / 4 * 4, '=');
+            using var data = JsonDocument.Parse(Convert.FromBase64String(payload));
+            if (!data.RootElement.TryGetProperty("exp", out var exp) || !exp.TryGetInt64(out var seconds)) return null;
+            return DateTimeOffset.FromUnixTimeSeconds(seconds);
+        }
+        catch (Exception e) when (e is FormatException or JsonException or ArgumentOutOfRangeException or InvalidOperationException) { return null; }
     }
 
     internal static string ReadShared(string path, int maxBytes)
@@ -201,6 +242,28 @@ public sealed class RiotApi : IGameApi, IQueueApi, IDisposable
         var id = Text(result.RootElement, "MatchID");
         return Guid.TryParse(id, out _) ? id : null;
     }
+    public async Task<bool?> IsCharacterSelectReady(string matchId, CancellationToken ct)
+    {
+        ValidateId(matchId);
+        if (!string.Equals(readinessSubject, Subject, StringComparison.OrdinalIgnoreCase) || DateTimeOffset.UtcNow >= readinessConnectionCheck)
+        {
+            readinessLocalAccount = await GetLocalEventConnection(Subject, ct) != null;
+            readinessSubject = Subject;
+            readinessConnectionCheck = DateTimeOffset.UtcNow.AddSeconds(3);
+        }
+        if (!readinessLocalAccount) return null;
+        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VALORANT", "Saved", "Logs", "ShooterGame.log");
+        try { return CharacterSelectReadyFromLog(ReadShared(path, 512 * 1024), matchId) ?? false; }
+        // A matching local client is present, so do not pick before its screen state can be read.
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
+    }
+    internal static bool? CharacterSelectReadyFromLog(string log, string matchId)
+    {
+        var states = Regex.Matches(log, @"LogGameFlowStateManager:.*Broadcasting state changed to ([A-Za-z0-9_]+)");
+        if (states.Count == 0) return null;
+        if (!string.Equals(states[^1].Groups[1].Value, "Pregame", StringComparison.Ordinal)) return false;
+        return log.Contains(matchId, StringComparison.OrdinalIgnoreCase);
+    }
     public async Task<MatchSnapshot> GetMatch(string matchId, CancellationToken ct)
     {
         ValidateId(matchId);
@@ -217,6 +280,13 @@ public sealed class RiotApi : IGameApi, IQueueApi, IDisposable
     }
     public async Task Select(string matchId, string agentId, CancellationToken ct) => await Write("select", matchId, agentId, ct);
     public async Task Lock(string matchId, string agentId, CancellationToken ct) => await Write("lock", matchId, agentId, ct);
+    public async Task<bool> IsInMatch(CancellationToken ct)
+    {
+        using var core = await Request(HttpMethod.Get, $"/core-game/v1/players/{Subject}", true, ct);
+        if (core != null) return true;
+        using var pregame = await Request(HttpMethod.Get, $"/pregame/v1/players/{Subject}", true, ct);
+        return pregame != null;
+    }
     public async Task<PartyQueueSnapshot> GetQueueSnapshot(CancellationToken ct)
     {
         using var player = await Request(HttpMethod.Get, $"/parties/v1/players/{Subject}", true, ct);
@@ -230,9 +300,8 @@ public sealed class RiotApi : IGameApi, IQueueApi, IDisposable
         var state = Text(root, "State");
         var queueId = root.TryGetProperty("MatchmakingData", out var matchmaking) ? Text(matchmaking, "QueueID") : "";
         var entryTime = Text(root, "QueueEntryTime");
-        if (!DateTimeOffset.TryParse(entryTime, out var queuedAt))
+        if (!DateTimeOffset.TryParse(entryTime, out _))
             throw new InvalidDataException("キュー状態が不正です");
-        var hasQueueEntry = queuedAt.Year > 1;
         var isLeader = false;
         if (root.TryGetProperty("Members", out var members) && members.ValueKind == JsonValueKind.Array)
         {
@@ -242,8 +311,9 @@ public sealed class RiotApi : IGameApi, IQueueApi, IDisposable
         if (!root.TryGetProperty("RestrictedSeconds", out var seconds) || seconds.ValueKind != JsonValueKind.Number ||
             !seconds.TryGetInt32(out var restricted) || restricted < 0)
             throw new InvalidDataException("キュー制限情報が不正です");
+        // QueueEntryTime can retain the previous search's timestamp after returning to the lobby.
         return new PartyQueueSnapshot(partyId, state, queueId, isLeader, restricted,
-            StringArray(root, "EligibleQueues"), StringArray(root, "QueueIneligibilities"), state == "MATCHMAKING" || hasQueueEntry);
+            StringArray(root, "EligibleQueues"), StringArray(root, "QueueIneligibilities"), state == "MATCHMAKING");
     }
     public async Task EnterQueue(string partyId, CancellationToken ct)
     {

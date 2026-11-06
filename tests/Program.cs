@@ -8,74 +8,103 @@ tests.Add(("idle never selects", async () => { var api = new Fake { MatchId = nu
 tests.Add(("two consecutive matches and duplicate suppression", async () =>
 {
     var api = new Fake(); var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default); Equal(0, api.Locks);
-    await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(1, api.Locks);
-    api.SelfState = ""; await engine.Tick(Config(), now.AddSeconds(4), default); Equal(1, api.Locks);
-    api.MatchId = null; await engine.Tick(Config(), now.AddSeconds(5), default);
-    api.MatchId = "match-2"; await engine.Tick(Config(), now.AddSeconds(6), default); Equal(1, api.Locks);
-    await engine.Tick(Config(), now.AddSeconds(9.1), default); Equal(2, api.Locks);
-    api.MatchId = "match-1"; api.SelfState = ""; await engine.Tick(Config(), now.AddSeconds(10), default); Equal(2, api.Locks);
+    await engine.Tick(Config(), now, default); Equal(1, api.Locks);
+    api.SelfState = ""; await engine.Tick(Config(), now.AddMilliseconds(100), default); Equal(1, api.Locks);
+    api.MatchId = null; await engine.Tick(Config(), now.AddMilliseconds(200), default);
+    api.MatchId = "match-2"; await engine.Tick(Config(), now.AddMilliseconds(300), default); Equal(2, api.Locks);
+    api.MatchId = "match-1"; api.SelfState = ""; await engine.Tick(Config(), now.AddMilliseconds(400), default); Equal(2, api.Locks);
 }));
-tests.Add(("selected agent is picked after the three second delay", async () =>
+tests.Add(("agent is selected and locked immediately when selection becomes active", async () =>
 {
-    var api = new Fake(); var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default);
-    await engine.Tick(Config(), now.AddSeconds(2.9), default); Equal(0, api.Selects); Equal(0, api.Locks);
-    await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(1, api.Selects); Equal(1, api.Locks);
-    await engine.Tick(Config(), now.AddSeconds(3.2), default); Equal(1, api.Selects); Equal(1, api.Locks);
+    var api = new Fake { State = "provisioned" }; var engine = new PickEngine(api, _ => { });
+    await engine.Tick(Config(), now, default); Equal(0, api.Selects); Equal(0, api.Locks);
+    api.State = "character_select_active";
+    await engine.Tick(Config(), now.AddMilliseconds(1), default); Equal(1, api.Selects); Equal(1, api.Locks);
+    await engine.Tick(Config(), now.AddMilliseconds(2), default); Equal(1, api.Selects); Equal(1, api.Locks);
+}));
+tests.Add(("pick waits until the game has entered the selection screen", async () =>
+{
+    var ready = false; var api = new Fake();
+    var engine = new PickEngine(api, _ => { }, (_, _) => Task.FromResult<bool?>(ready));
+    await engine.Tick(Config(), now, default); Equal(0, api.Selects); Equal(0, api.Locks);
+    await engine.Tick(Config(), now.AddSeconds(20), default); Equal(0, api.Selects); Equal(0, api.Locks);
+    ready = true;
+    await engine.Tick(Config(), now.AddSeconds(20).AddMilliseconds(250), default); Equal(1, api.Selects); Equal(1, api.Locks);
+}));
+tests.Add(("unavailable local readiness uses a bounded fallback", async () =>
+{
+    var api = new Fake(); var engine = new PickEngine(api, _ => { }, (_, _) => Task.FromResult<bool?>(null));
+    await engine.Tick(Config(), now, default); Equal(0, api.Selects);
+    await engine.Tick(Config(), now.AddSeconds(11.9), default); Equal(0, api.Selects);
+    await engine.Tick(Config(), now.AddSeconds(12.1), default); Equal(1, api.Locks);
+}));
+tests.Add(("game log readiness requires the current match and entered Pregame state", () =>
+{
+    const string id = "22222222-2222-2222-2222-222222222222";
+    var initial = $"RMS /pregame/v1/matches/{id}\nLogGameFlowStateManager: Broadcasting state changed to TransitionToPregame";
+    Equal<bool?>(false, RiotApi.CharacterSelectReadyFromLog(initial, id));
+    var ready = initial + "\nLogGameFlowStateManager: [PlatformTime: 42] Broadcasting state changed to Pregame";
+    Equal<bool?>(true, RiotApi.CharacterSelectReadyFromLog(ready, id));
+    Equal<bool?>(false, RiotApi.CharacterSelectReadyFromLog(ready, "33333333-3333-3333-3333-333333333333"));
+    Equal<bool?>(false, RiotApi.CharacterSelectReadyFromLog(ready + "\nLogGameFlowStateManager: Broadcasting state changed to TransitionToInGame", id));
+    Equal<bool?>(null, RiotApi.CharacterSelectReadyFromLog("no state", id));
+    return Task.CompletedTask;
 }));
 tests.Add(("a teammate picking the configured agent requires manual action", async () =>
 {
     var api = new Fake { Others = [new("other", "agent-a", "locked")] };
     var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default); await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(0, api.Selects); Equal(0, api.Locks);
+    await engine.Tick(Config(), now, default); Equal(0, api.Selects); Equal(0, api.Locks);
 }));
 tests.Add(("taken agents are retried when freed", async () =>
 {
     var api = new Fake { Others = [new("other", "agent-a", "locked")] }; var config = Config();
-    var engine = new PickEngine(api, _ => { }); await engine.Tick(config, now, default);
-    await engine.Tick(config, now.AddSeconds(3.1), default); Equal(0, api.Selects);
-    api.Others = []; await engine.Tick(config, now.AddSeconds(3.2), default); Equal(1, api.Locks);
+    var engine = new PickEngine(api, _ => { }); await engine.Tick(config, now, default); Equal(0, api.Selects);
+    api.Others = []; await engine.Tick(config, now.AddMilliseconds(1), default); Equal(1, api.Locks);
 }));
-tests.Add(("manual lock is preserved", async () => { var api = new Fake { SelfState = "locked", Selected = "manual" }; var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default); await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(0, api.Selects); Equal("manual", api.Selected); }));
-tests.Add(("select and lock in the same check after the delay", async () => { var api = new Fake(); var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default); await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(1, api.Selects); Equal(1, api.Locks); }));
+tests.Add(("manual lock is preserved", async () => { var api = new Fake { SelfState = "locked", Selected = "manual" }; var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default); Equal(0, api.Selects); Equal("manual", api.Selected); }));
+tests.Add(("select and lock on first active match check", async () => { var api = new Fake(); var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default); Equal(1, api.Selects); Equal(1, api.Locks); }));
 tests.Add(("inactive or missing self never writes", async () =>
 {
-    var api = new Fake { State = "provisioned" }; var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default);
-    await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal(0, api.Selects);
-    api.State = "character_select_active"; api.IncludeSelf = false; await engine.Tick(Config(), now.AddSeconds(3.2), default); Equal(0, api.Selects);
+    var api = new Fake { State = "provisioned" }; var engine = new PickEngine(api, _ => { }); await engine.Tick(Config(), now, default); Equal(0, api.Selects);
+    api.State = "character_select_active"; api.IncludeSelf = false; await engine.Tick(Config(), now.AddMilliseconds(1), default); Equal(0, api.Selects);
 }));
 tests.Add(("rejected agent is reported without selecting a different agent", async () =>
 {
     var api = new Fake { RejectAgent = "agent-a" }; var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default); await engine.Tick(Config(), now.AddSeconds(3.1), default); Equal("", api.Selected); Equal(0, api.Locks); Equal(1, api.Selects);
+    await engine.Tick(Config(), now, default); Equal("", api.Selected); Equal(0, api.Locks); Equal(1, api.Selects);
+    for (var i = 1; i <= 7; i++) await engine.Tick(Config(), now.AddMilliseconds(i), default);
+    Equal(6, api.Selects); Equal(0, api.Locks);
+}));
+tests.Add(("selection is retried after a temporary rejection as the screen opens", async () =>
+{
+    var api = new Fake { RejectAgent = "agent-a" }; var engine = new PickEngine(api, _ => { });
+    await engine.Tick(Config(), now, default); Equal(0, api.Locks);
+    api.RejectAgent = null;
+    await engine.Tick(Config(), now.AddMilliseconds(1), default); Equal(1, api.Locks);
 }));
 tests.Add(("cancel after selection prevents lock", async () =>
 {
     using var cts = new CancellationTokenSource(); var api = new Fake { AfterSelect = cts.Cancel }; var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, cts.Token);
-    try { await engine.Tick(Config(), now.AddSeconds(3.1), cts.Token); throw new Exception("Should cancel"); } catch (OperationCanceledException) { }
+    try { await engine.Tick(Config(), now, cts.Token); throw new Exception("Should cancel"); } catch (OperationCanceledException) { }
     Equal(0, api.Locks);
 }));
 tests.Add(("lock response lost is not sent twice", async () =>
 {
     var api = new Fake { LoseLockResponse = true }; var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default);
-    try { await engine.Tick(Config(), now.AddSeconds(3.1), default); } catch (HttpRequestException) { }
-    await engine.Tick(Config(), now.AddSeconds(3.2), default); Equal(1, api.Locks);
+    try { await engine.Tick(Config(), now, default); } catch (HttpRequestException) { }
+    await engine.Tick(Config(), now.AddMilliseconds(1), default); Equal(1, api.Locks);
 }));
 tests.Add(("write retries are bounded", async () =>
 {
     var api = new Fake { SelectError = 500 }; var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default);
-    for (var i = 0; i < 12; i++) try { await engine.Tick(Config(), now.AddSeconds(3.1).AddMilliseconds(i * 10), default); } catch (ApiException) { }
+    for (var i = 0; i < 12; i++) try { await engine.Tick(Config(), now.AddMilliseconds(i * 10), default); } catch (ApiException) { }
     Equal(6, api.Selects); Equal(0, api.Locks);
 }));
 tests.Add(("rate limit is surfaced for worker backoff", async () =>
 {
     var api = new Fake { SelectError = 429 }; var engine = new PickEngine(api, _ => { });
-    await engine.Tick(Config(), now, default);
-    try { await engine.Tick(Config(), now.AddSeconds(3.1), default); throw new Exception("Expected rate limit"); }
+    try { await engine.Tick(Config(), now, default); throw new Exception("Expected rate limit"); }
     catch (ApiException e) { Equal(429, e.Status); }
     Equal(1, api.Selects);
 }));
@@ -124,6 +153,39 @@ tests.Add(("only relevant local events wake the queue monitor", () =>
     var relativeParty = Frame("/riot-messaging-service/v1/message", new { resource = "parties/v1/parties/id" });
     Equal(RiotLocalEvents.Notification.QueueChanged, RiotLocalEvents.Classify(relativeParty, subject, ref lastPresence));
     return Task.CompletedTask;
+}));
+tests.Add(("nested current client presence wakes queue monitoring when the match ends", () =>
+{
+    const string subject = "11111111-1111-1111-1111-111111111111";
+    string? lastPresence = null;
+    byte[] Frame(string phase, string party) => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new object[]
+    {
+        8, "OnJsonApiEvent", new { uri = "/chat/v4/presences", data = new { puuid = subject, product = "valorant",
+            @private = Convert.ToBase64String(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+            { matchPresenceData = new { sessionLoopState = phase }, partyPresenceData = new { partyState = party } })) } }
+    });
+    Equal(RiotLocalEvents.Notification.QueueChanged, RiotLocalEvents.Classify(Frame("INGAME", "DEFAULT"), subject, ref lastPresence));
+    Equal(RiotLocalEvents.Notification.None, RiotLocalEvents.Classify(Frame("INGAME", "DEFAULT"), subject, ref lastPresence));
+    Equal(RiotLocalEvents.Notification.QueueChanged, RiotLocalEvents.Classify(Frame("MENUS", "DEFAULT"), subject, ref lastPresence));
+    Equal(RiotLocalEvents.Notification.QueueChanged, RiotLocalEvents.Classify(Frame("MENUS", "MATCHMAKING"), subject, ref lastPresence));
+    var malformed = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new object[] { 8, "OnJsonApiEvent", new { uri = "/chat/v4/presences", data = new { puuid = subject, product = "valorant", @private = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("[]")) } } });
+    Equal(RiotLocalEvents.Notification.None, RiotLocalEvents.Classify(malformed, subject, ref lastPresence));
+    return Task.CompletedTask;
+}));
+tests.Add(("lobby party state does not cause queue entry during an active match", async () =>
+{
+    var api = new FakeQueue { InMatch = true };
+    var engine = new AutoQueueEngine(api, _ => { });
+    await engine.Tick(now, default); Equal(0, api.Joins);
+    api.InMatch = false;
+    await engine.Tick(now.AddSeconds(1), default, stateChanged: true); Equal(1, api.Joins);
+}));
+tests.Add(("stopping auto queue while checking match state prevents joining", async () =>
+{
+    var enabled = true;
+    var api = new FakeQueue { OnMatchCheck = () => enabled = false };
+    await new AutoQueueEngine(api, _ => { }).Tick(now, default, enabled: () => enabled);
+    Equal(0, api.Joins);
 }));
 tests.Add(("LAN relay authenticates the account and forwards a state change", async () =>
 {
@@ -226,6 +288,121 @@ tests.Add(("OAuth callback state and origin validation", () =>
     Equal(false, AuthFlow.AllowedNavigation(new Uri("http://accounts.google.com/login")));
     return Task.CompletedTask;
 }));
+tests.Add(("system browser login accepts only its matching loopback callback", async () =>
+{
+    var state = AuthFlow.NewState();
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    var session = new SystemBrowserAuth(state, 0);
+    var result = await session.Run(async (url, port) =>
+    {
+        Equal("auth.riotgames.com", url.Host);
+        Equal(true, Uri.UnescapeDataString(url.Query).Contains("redirect_uri=http://localhost/redirect"));
+        using var client = new HttpClient(new HttpClientHandler { UseProxy = false });
+        var baseUrl = $"http://localhost:{port}";
+        using var page = await client.GetAsync(baseUrl + "/redirect", timeout.Token);
+        Equal(System.Net.HttpStatusCode.OK, page.StatusCode);
+        var pageText = await page.Content.ReadAsStringAsync(timeout.Token);
+        Equal(true, pageText.Contains("location.hash"));
+        using var invalid = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/auth-result");
+        invalid.Headers.Add("Origin", baseUrl);
+        invalid.Content = new StringContent("#access_token=bad&id_token=bad&expires_in=3600&token_type=Bearer&state=wrong");
+        using var refused = await client.SendAsync(invalid, timeout.Token);
+        Equal(System.Net.HttpStatusCode.BadRequest, refused.StatusCode);
+        using var foreign = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/auth-result");
+        foreign.Headers.Add("Origin", "https://unrelated.example");
+        foreign.Content = new StringContent($"#access_token=bad&id_token=bad&expires_in=3600&token_type=Bearer&state={state}");
+        try { using var ignored = await client.SendAsync(foreign, timeout.Token); throw new Exception("Accepted unrelated origin"); }
+        catch (HttpRequestException) { }
+        using var valid = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/auth-result");
+        valid.Headers.Add("Origin", baseUrl);
+        valid.Content = new StringContent($"#access_token=test-access&id_token=test-id&expires_in=3600&token_type=Bearer&state={state}");
+        using var accepted = await client.SendAsync(valid, timeout.Token);
+        Equal(System.Net.HttpStatusCode.OK, accepted.StatusCode);
+    }, timeout.Token);
+    Equal("test-access", result?.AccessToken);
+}));
+tests.Add(("canceling browser login releases its local listener", async () =>
+{
+    var portReady = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var stop = new CancellationTokenSource();
+    var run = new SystemBrowserAuth(AuthFlow.NewState(), 0).Run((_, port) => { portReady.TrySetResult(port); return Task.CompletedTask; }, stop.Token);
+    var port = await portReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    stop.Cancel();
+    try { await run; throw new Exception("Expected cancellation"); } catch (OperationCanceledException) { }
+    var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+    try { listener.Start(); } finally { listener.Stop(); }
+}));
+tests.Add(("browser callback only uses loopback addresses", async () =>
+{
+    Equal(true, SystemBrowserAuth.SafeLocalAddresses([System.Net.IPAddress.Loopback, System.Net.IPAddress.IPv6Loopback]));
+    Equal(false, SystemBrowserAuth.SafeLocalAddresses([]));
+    Equal(false, SystemBrowserAuth.SafeLocalAddresses([System.Net.IPAddress.Loopback, System.Net.IPAddress.Parse("192.0.2.1")]));
+    if (!System.Net.Sockets.Socket.OSSupportsIPv6) return;
+    var blocker = new System.Net.Sockets.TcpListener(System.Net.IPAddress.IPv6Loopback, 0) { ExclusiveAddressUse = true };
+    blocker.Start();
+    try
+    {
+        var port = ((System.Net.IPEndPoint)blocker.LocalEndpoint).Port;
+        var opened = false;
+        try
+        {
+            await new SystemBrowserAuth(AuthFlow.NewState(), port).Run((_, _) => { opened = true; return Task.CompletedTask; }, CancellationToken.None);
+            throw new Exception("Started without securing both loopback addresses");
+        }
+        catch (System.Net.Sockets.SocketException) { }
+        Equal(false, opened);
+    }
+    finally { blocker.Stop(); }
+}));
+tests.Add(("system browser callback validates state on OAuth errors", () =>
+{
+    var state = AuthFlow.NewState();
+    Equal<AuthResult?>(null, AuthFlow.ParseSystemBrowserFragment($"#error=access_denied&state={state}", state, now));
+    try { AuthFlow.ParseSystemBrowserFragment("#error=access_denied&state=wrong", state, now); throw new Exception("Accepted wrong state"); }
+    catch (InvalidDataException) { }
+    return Task.CompletedTask;
+}));
+tests.Add(("default browser login uses a separate private profile", () =>
+{
+    var browser = @"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe";
+    Equal(browser, IsolatedBrowser.ExtractExecutable('"' + browser + "\" --single-argument %1"));
+    var profile = Path.Combine(Path.GetTempPath(), "ValoAutoPick-PrivateLogin", Guid.NewGuid().ToString("N"));
+    var url = new Uri("https://auth.riotgames.com/authorize?state=test");
+    var start = IsolatedBrowser.CreateStartInfo(browser, profile, url);
+    Equal(false, start.UseShellExecute);
+    Equal(browser, start.FileName);
+    Equal(true, start.ArgumentList.Contains("--user-data-dir=" + profile));
+    Equal(true, start.ArgumentList.Contains("--incognito"));
+    Equal(true, start.ArgumentList.Contains("--disable-sync"));
+    Equal(url.AbsoluteUri, start.ArgumentList[^1]);
+    var edge = IsolatedBrowser.CreateStartInfo(@"C:\Program Files\Microsoft\Edge\Application\msedge.exe", profile, url);
+    Equal(true, edge.ArgumentList.Contains("--inprivate"));
+    var firefox = IsolatedBrowser.CreateStartInfo(@"C:\Program Files\Mozilla Firefox\firefox.exe", profile, url);
+    Equal(true, firefox.ArgumentList.Contains("-no-remote"));
+    Equal(true, firefox.ArgumentList.Contains("-private-window"));
+    Equal(true, firefox.ArgumentList.Contains(profile));
+    try { IsolatedBrowser.CreateStartInfo(@"C:\Other\unknown.exe", profile, url); throw new Exception("Accepted an unsupported browser"); }
+    catch (BrowserIsolationException) { }
+    return Task.CompletedTask;
+}));
+tests.Add(("private browser cleanup is restricted to a generated profile", () =>
+{
+    var root = Path.Combine(Path.GetTempPath(), "ValoAutoPick-PrivateLogin");
+    Equal(true, IsolatedBrowser.IsOwnedProfilePath(root, Path.Combine(root, Guid.NewGuid().ToString("N"))));
+    Equal(false, IsolatedBrowser.IsOwnedProfilePath(root, root));
+    Equal(false, IsolatedBrowser.IsOwnedProfilePath(root, Path.Combine(root, "not-a-generated-profile")));
+    Equal(false, IsolatedBrowser.IsOwnedProfilePath(root, Path.Combine(root, "..", Guid.NewGuid().ToString("N"))));
+    return Task.CompletedTask;
+}));
+tests.Add(("local account token expiry is read without accepting malformed tokens", () =>
+{
+    var payload = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("{\"exp\":2000000000}"))
+        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    Equal<DateTimeOffset?>(DateTimeOffset.FromUnixTimeSeconds(2000000000), RiotApi.TokenExpiry("a." + payload + ".b"));
+    Equal<DateTimeOffset?>(null, RiotApi.TokenExpiry("not-a-jwt"));
+    Equal<DateTimeOffset?>(null, RiotApi.TokenExpiry("a.invalid.b"));
+    return Task.CompletedTask;
+}));
 tests.Add(("settings sanitize invalid values", () =>
 {
     var guid = Guid.NewGuid().ToString(); var settings = new Settings { AgentId = guid, Region = "evil" }.Normalize();
@@ -236,6 +413,7 @@ tests.Add(("legacy settings ignore malformed priority values", () =>
     Equal("", Storage.Parse("""{"Priority":[123]}""").AgentId);
     var id = Guid.NewGuid().ToString();
     Equal(id, Storage.Parse("{\"Priority\":[\"" + id + "\"]}").AgentId);
+    Equal(true, Storage.Parse("{\"SystemBrowserLogin\":true}").SystemBrowserLogin);
     return Task.CompletedTask;
 }));
 tests.Add(("incomplete party responses never join a queue", async () =>
@@ -255,6 +433,34 @@ tests.Add(("incomplete party responses never join a queue", async () =>
         catch (InvalidDataException) { }
         Equal(false, transport.Calls.Any(call => call.Uri.AbsolutePath.EndsWith("/matchmaking/join")));
     }
+}));
+tests.Add(("a previous queue timestamp does not prevent requeueing from the lobby", async () =>
+{
+    var transport = new Transport { QueueEntryTime = "2026-11-05T12:00:00Z", PregameAvailable = false };
+    using var api = new RiotApi(transport);
+    await api.Login(new AuthResult("fake-access", "fake-id", now.AddHours(1)), "auto", default);
+    var engine = new AutoQueueEngine(api, _ => { });
+    Equal(false, (await api.GetQueueSnapshot(default)).IsInQueue);
+    await engine.Tick(now, default);
+    Equal(1, transport.Calls.Count(call => call.Uri.AbsolutePath.EndsWith("/matchmaking/join")));
+    transport.PartyResponse = """{"ID":"44444444-4444-4444-4444-444444444444","State":"MATCHMAKING","Members":[{"Subject":"11111111-1111-1111-1111-111111111111","IsOwner":true}],"MatchmakingData":{"QueueID":"competitive"},"QueueEntryTime":"2026-11-05T12:00:00Z","RestrictedSeconds":0,"EligibleQueues":["competitive"],"QueueIneligibilities":[]}""";
+    Equal(true, (await api.GetQueueSnapshot(default)).IsInQueue);
+    await engine.Tick(now.AddSeconds(3), default);
+    Equal(1, transport.Calls.Count(call => call.Uri.AbsolutePath.EndsWith("/matchmaking/join")));
+}));
+tests.Add(("queue match checks cover in-game, pregame, and idle", async () =>
+{
+    var transport = new Transport { CoregameAvailable = true, PregameAvailable = false };
+    using var api = new RiotApi(transport);
+    await api.Login(new AuthResult("fake-access", "fake-id", now.AddHours(1)), "auto", default);
+    Equal(true, await api.IsInMatch(default));
+    transport.CoregameAvailable = false; transport.PregameAvailable = true;
+    Equal(true, await api.IsInMatch(default));
+    transport.PregameAvailable = false;
+    Equal(false, await api.IsInMatch(default));
+    transport.GameStatus = 403;
+    try { await api.IsInMatch(default); throw new Exception("Expected failure instead of an idle state"); }
+    catch (ApiException e) { Equal(403, e.Status); }
 }));
 tests.Add(("malformed match players are reported as invalid data", async () =>
 {
@@ -295,7 +501,7 @@ tests.Add(("remote account login derives region and does not leak tokens to meta
     Equal("44444444-4444-4444-4444-444444444444", queue.PartyId); Equal("competitive", queue.QueueId);
     Equal(true, queue.IsLeader); Equal(true, queue.EligibleQueues.Contains("competitive")); Equal(false, queue.IsInQueue);
     transport.QueueEntryTime = "2026-11-05T12:00:00Z";
-    Equal(true, (await api.GetQueueSnapshot(default)).IsInQueue);
+    Equal(false, (await api.GetQueueSnapshot(default)).IsInQueue);
     transport.QueueEntryTime = "0001-01-01T00:00:00Z";
     await api.EnterQueue(queue.PartyId, default);
     Equal(HttpMethod.Post, transport.Calls[^1].Method);
@@ -356,9 +562,11 @@ sealed class FakeQueue : IQueueApi
 {
     public PartyQueueSnapshot Snapshot = new("44444444-4444-4444-4444-444444444444", "DEFAULT", "competitive", true, 0, ["competitive", "unrated"], []);
     public int Joins, Leaves;
+    public bool InMatch;
     public string JoinedParty = "";
-    public Action? OnSnapshot;
+    public Action? OnSnapshot, OnMatchCheck;
     public Task<PartyQueueSnapshot> GetQueueSnapshot(CancellationToken ct) { ct.ThrowIfCancellationRequested(); OnSnapshot?.Invoke(); return Task.FromResult(Snapshot); }
+    public Task<bool> IsInMatch(CancellationToken ct) { ct.ThrowIfCancellationRequested(); OnMatchCheck?.Invoke(); return Task.FromResult(InMatch); }
     public Task EnterQueue(string partyId, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested(); Joins++; JoinedParty = partyId; Snapshot = Snapshot with { State = "MATCHMAKING" }; return Task.CompletedTask;
@@ -373,6 +581,7 @@ sealed class Transport : HttpMessageHandler
 {
     public List<(Uri Uri, HttpMethod Method, string Authorization, string Entitlement)> Calls = [];
     public int GameStatus = 200;
+    public bool PregameAvailable = true, CoregameAvailable;
     public string QueueEntryTime = "0001-01-01T00:00:00Z";
     public string? PartyResponse, MatchResponse;
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
@@ -392,6 +601,8 @@ sealed class Transport : HttpMessageHandler
             _ => MatchResponse ?? """{"ID":"22222222-2222-2222-2222-222222222222","PregameState":"character_select_active","AllyTeam":{"Players":[{"Subject":"11111111-1111-1111-1111-111111111111","CharacterID":"","CharacterSelectionState":""}]}}"""
         };
         var status = req.RequestUri.Host.EndsWith(".pvp.net") ? GameStatus : 200;
+        if (status == 200 && req.RequestUri.AbsolutePath.Contains("/core-game/v1/players/") && !CoregameAvailable) status = 404;
+        if (status == 200 && req.RequestUri.AbsolutePath.Contains("/pregame/v1/players/") && !PregameAvailable) status = 404;
         var res = new HttpResponseMessage((System.Net.HttpStatusCode)status) { Content = new StringContent(json) };
         if (status == 429) res.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(17));
         return Task.FromResult(res);

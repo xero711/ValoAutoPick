@@ -27,7 +27,11 @@ internal static class Theme
 
 internal static class UiMetrics
 {
-    public static int Px(Control control, int value) => (int)Math.Round(value * control.DeviceDpi / 96f);
+    public const float CompactScale = .7f;
+    public static int Px(Control control, int value) => (int)Math.Round(value * control.DeviceDpi / 96f * CompactScale);
+    // Keep text larger than the compact layout for comfortable reading.
+    public static float FontSize(float value) => Math.Max(9.5f, value * .95f);
+    public static float DisplayFontSize(float value) => Math.Max(9f, value * .8f);
 }
 
 internal static class AgentImages
@@ -71,7 +75,7 @@ public sealed class RoundedCard : Panel
     public RoundedCard()
     {
         BackColor = Theme.Background;
-        Padding = new Padding(16);
+        Padding = new Padding(14);
         DoubleBuffered = true;
         ResizeRedraw = true;
     }
@@ -81,7 +85,7 @@ public sealed class RoundedCard : Panel
         base.OnPaint(e);
         if (Width < 2 || Height < 2) return;
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = ThemedButton.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 10);
+        using var path = ThemedButton.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), UiMetrics.Px(this, 9));
         using var fill = new SolidBrush(Theme.Surface);
         using var border = new Pen(Theme.Border);
         e.Graphics.FillPath(fill, path);
@@ -91,22 +95,95 @@ public sealed class RoundedCard : Panel
 
 public class DarkForm : Form
 {
+    private readonly WindowCaption caption;
+    private readonly List<Font> compactFonts = [];
+
     public DarkForm()
     {
         // Build every form in logical pixels before applying its display DPI.
         AutoScaleMode = AutoScaleMode.None;
         Font = new Font("Yu Gothic UI", 11.5f);
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        MaximizeBox = false;
+        Padding = new Padding(6);
+        SizeGripStyle = SizeGripStyle.Hide;
+        caption = new WindowCaption(this);
+        Controls.Add(caption);
+        SetStyle(ControlStyles.ResizeRedraw, true);
     }
+
+    protected override void OnControlAdded(ControlEventArgs e)
+    {
+        base.OnControlAdded(e);
+        // Content is added by each derived form after the caption is created.
+        // Docking is calculated back-to-front, so reserve the caption's space
+        // before a derived form's fill control is laid out.
+        if (caption != null && e.Control != caption) Controls.SetChildIndex(caption, Controls.Count - 1);
+    }
+
     protected override void OnLoad(EventArgs e)
     {
+        // The former native caption was outside ClientSize. Reserve the same
+        // content area for the custom caption and frame.
+        var chromeSize = new Size(Padding.Horizontal, Padding.Vertical + caption.Height);
+        ClientSize = new Size(ClientSize.Width + chromeSize.Width, ClientSize.Height + chromeSize.Height);
+        if (!MinimumSize.IsEmpty)
+            MinimumSize = new Size(MinimumSize.Width + chromeSize.Width, MinimumSize.Height + chromeSize.Height);
+        caption.UpdateButtons();
+        var fonts = Descendants(this).Select(control => (Control: control, Font: control.Font)).ToArray();
         AutoScaleMode = AutoScaleMode.Dpi;
-        AutoScaleDimensions = new SizeF(96, 96);
+        // Use one uniform compact scale alongside Windows' per-monitor DPI scale.
+        AutoScaleDimensions = new SizeF(96 / UiMetrics.CompactScale, 96 / UiMetrics.CompactScale);
         PerformAutoScale();
+        var fontCache = new Dictionary<Font, Font>();
+        foreach (var entry in fonts)
+        {
+            if (!fontCache.TryGetValue(entry.Font, out var scaled))
+            {
+                scaled = new Font(entry.Font.FontFamily, UiMetrics.FontSize(entry.Font.Size), entry.Font.Style,
+                    entry.Font.Unit, entry.Font.GdiCharSet, entry.Font.GdiVerticalFont);
+                fontCache.Add(entry.Font, scaled);
+                compactFonts.Add(scaled);
+            }
+            entry.Control.Font = scaled;
+        }
         base.OnLoad(e);
         var available = Screen.FromControl(this).WorkingArea;
         MinimumSize = new Size(Math.Min(MinimumSize.Width, available.Width), Math.Min(MinimumSize.Height, available.Height));
         Size = new Size(Math.Min(Width, available.Width), Math.Min(Height, available.Height));
+        if (StartPosition == FormStartPosition.CenterScreen) CenterToScreen();
+        else if (StartPosition == FormStartPosition.CenterParent && Owner != null) CenterToParent();
         Location = new Point(Math.Clamp(Left, available.Left, available.Right - Width), Math.Clamp(Top, available.Top, available.Bottom - Height));
+    }
+
+    private static IEnumerable<Control> Descendants(Control parent)
+    {
+        yield return parent;
+        foreach (Control child in parent.Controls)
+            foreach (var descendant in Descendants(child)) yield return descendant;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing) { foreach (var font in compactFonts) font.Dispose(); compactFonts.Clear(); }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
+        using var border = new Pen(Color.FromArgb(62, 75, 91));
+        e.Graphics.DrawRectangle(border, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
+        using var accent = new Pen(Theme.Red, Math.Max(1, UiMetrics.Px(this, 2)));
+        e.Graphics.DrawLine(accent, UiMetrics.Px(this, 6), UiMetrics.Px(this, 2),
+            UiMetrics.Px(this, 62), UiMetrics.Px(this, 2));
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (WindowFrame.ProcessMessage(this, caption, ref m)) return;
+        base.WndProc(ref m);
     }
 
     [DllImport("dwmapi.dll", EntryPoint = "DwmSetWindowAttribute")]
@@ -124,7 +201,11 @@ public class DarkForm : Form
     {
         base.OnHandleCreated(e);
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return;
-        try { int enabled = 1; _ = SetDwmAttribute(Handle, 20, ref enabled, sizeof(int)); }
+        try
+        {
+            int enabled = 1; _ = SetDwmAttribute(Handle, 20, ref enabled, sizeof(int));
+            int squareCorners = 1; _ = SetDwmAttribute(Handle, 33, ref squareCorners, sizeof(int));
+        }
         catch (DllNotFoundException) { }
         catch (EntryPointNotFoundException) { }
     }
@@ -133,6 +214,7 @@ public class DarkForm : Form
 public sealed class SwitchToggle : Control
 {
     private bool isChecked;
+    private readonly InteractionMotion motion;
     public event EventHandler? CheckedChanged;
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool Checked
@@ -146,6 +228,7 @@ public sealed class SwitchToggle : Control
         Font = new Font("Yu Gothic UI", 11.5f); Size = new Size(280, 52); Cursor = Cursors.Hand;
         AccessibleRole = AccessibleRole.CheckButton; AccessibleName = text; TabStop = true;
         SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        motion = new InteractionMotion(this);
     }
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -153,11 +236,18 @@ public sealed class SwitchToggle : Control
         int S(int value) => UiMetrics.Px(this, value);
         var track = new Rectangle(Width - S(60), (Height - S(30)) / 2, S(56), S(30));
         using var path = ThemedButton.Rounded(track, S(15));
-        using var fill = new SolidBrush(!Enabled ? Color.FromArgb(48, 54, 64) : Checked ? Theme.Red : Theme.Border);
+        var trackColor = !Enabled ? Color.FromArgb(48, 54, 64) : Checked ? Theme.Red : Theme.Border;
+        if (Enabled)
+        {
+            trackColor = InteractionMotion.Blend(trackColor, Color.White, motion.Hover * .18f);
+            trackColor = InteractionMotion.Blend(trackColor, Color.Black, motion.Press * .25f);
+        }
+        using var fill = new SolidBrush(trackColor);
         e.Graphics.FillPath(fill, path);
         var knobX = Checked ? track.Right - S(25) : track.Left + S(5);
         using var knob = new SolidBrush(Enabled ? Color.White : Theme.Muted);
-        e.Graphics.FillEllipse(knob, knobX, track.Y + S(5), S(20), S(20));
+        var inset = (int)Math.Round(S(2) * motion.Press);
+        e.Graphics.FillEllipse(knob, knobX + inset, track.Y + S(5) + inset, S(20) - inset * 2, S(20) - inset * 2);
         var label = new Rectangle(0, 0, Math.Max(0, track.Left - S(16)), Height);
         TextRenderer.DrawText(e.Graphics, Text, Font, label, Enabled ? ForeColor : Theme.Muted,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
@@ -175,6 +265,7 @@ public sealed class SwitchToggle : Control
 public sealed class ThemedButton : Control, IButtonControl
 {
     private bool primary, isDefault, spacePressed;
+    private readonly InteractionMotion motion;
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool Primary
     {
@@ -199,19 +290,26 @@ public sealed class ThemedButton : Control, IButtonControl
         SetStyle(ControlStyles.StandardDoubleClick, false);
         SizeChanged += (_, _) => UpdateRoundedRegion();
         UpdateRoundedRegion();
+        motion = new InteractionMotion(this);
     }
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
-        var fill = !Enabled ? Color.FromArgb(39, 47, 59) : Primary ? Theme.Red : On ? Color.FromArgb(45, 57, 75) : Theme.Elevated;
+        var shift = Enabled ? (int)Math.Round(UiMetrics.Px(this, 2) * motion.Press) : 0;
+        var bounds = new Rectangle(shift, shift, Math.Max(1, Width - 1 - shift * 2), Math.Max(1, Height - 1 - shift));
+        var fill = !Enabled ? Color.FromArgb(39, 47, 59) : Primary ? Theme.Red : Theme.Elevated;
+        if (Enabled)
+        {
+            fill = InteractionMotion.Blend(fill, Primary ? Color.FromArgb(255, 112, 122) : Color.FromArgb(62, 79, 99), motion.Hover);
+            fill = InteractionMotion.Blend(fill, Primary ? Color.FromArgb(199, 42, 57) : Color.FromArgb(15, 21, 30), motion.Press * .85f);
+        }
         // Clear the outer corner pixels before drawing the rounded surface.
         e.Graphics.Clear(Parent?.BackColor ?? Theme.Background);
         using var path = Rounded(bounds, ButtonRadius);
         using var brush = new SolidBrush(fill); e.Graphics.FillPath(brush, path);
         if (!Primary)
         {
-            var border = Enabled ? Theme.Border : Color.FromArgb(55, 64, 78);
+            var border = Enabled ? InteractionMotion.Blend(Theme.Border, Theme.Muted, motion.Hover * .55f) : Color.FromArgb(55, 64, 78);
             using var pen = new Pen(border); e.Graphics.DrawPath(pen, path);
         }
         TextRenderer.DrawText(e.Graphics, Text, Font, Rectangle.Inflate(bounds, -UiMetrics.Px(this, 16), -UiMetrics.Px(this, 3)), Enabled ? ForeColor : Theme.Muted,
@@ -259,7 +357,6 @@ public sealed class ThemedButton : Control, IButtonControl
         public override string? DefaultAction => "押す";
         public override void DoDefaultAction() => owner.PerformClick();
     }
-    private bool On => ClientRectangle.Contains(PointToClient(Cursor.Position));
     private int ButtonRadius => Math.Min(UiMetrics.Px(this, 12), Math.Max(4, Height / 3));
     private void UpdateRoundedRegion()
     {
@@ -271,8 +368,6 @@ public sealed class ThemedButton : Control, IButtonControl
         previous?.Dispose();
         Invalidate();
     }
-    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); Invalidate(); }
-    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); Invalidate(); }
     protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
     internal static GraphicsPath Rounded(Rectangle rect, int radius)
     {
@@ -325,7 +420,7 @@ public sealed class ThemedSelect : Control
     private readonly string[] items;
     private int selectedIndex = -1;
     private ContextMenuStrip? picker;
-    private bool hover;
+    private readonly InteractionMotion motion;
     public event EventHandler? SelectedIndexChanged;
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int SelectedIndex
@@ -346,14 +441,17 @@ public sealed class ThemedSelect : Control
         SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
         SizeChanged += (_, _) => RoundedCorners.Apply(this, 6);
         RoundedCorners.Apply(this, 6);
+        motion = new InteractionMotion(this);
     }
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
         using var path = ThemedButton.Rounded(bounds, 6);
-        using var fill = new SolidBrush(Enabled ? hover ? Theme.Elevated : Color.FromArgb(26, 34, 46) : Color.FromArgb(31, 36, 45));
-        using var border = new Pen(Focused ? Theme.Red : Theme.Border);
+        var fillColor = Enabled ? InteractionMotion.Blend(Color.FromArgb(26, 34, 46), Color.FromArgb(55, 70, 89), motion.Hover) : Color.FromArgb(31, 36, 45);
+        if (Enabled) fillColor = InteractionMotion.Blend(fillColor, Theme.Background, motion.Press * .65f);
+        using var fill = new SolidBrush(fillColor);
+        using var border = new Pen(Focused ? Theme.Red : InteractionMotion.Blend(Theme.Border, Theme.Muted, Enabled ? motion.Hover * .5f : 0));
         e.Graphics.FillPath(fill, path); e.Graphics.DrawPath(border, path);
         var selected = selectedIndex >= 0 ? items[selectedIndex] : "選択";
         TextRenderer.DrawText(e.Graphics, selected, Font, new Rectangle(UiMetrics.Px(this, 16), 0, Math.Max(0, Width - UiMetrics.Px(this, 54)), Height), Enabled ? ForeColor : Theme.Muted,
@@ -409,8 +507,6 @@ public sealed class ThemedSelect : Control
         picker.Show(this, new Point(0, Height));
     }
     protected override void OnClick(EventArgs e) { base.OnClick(e); ShowPicker(); }
-    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hover = true; Invalidate(); }
-    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hover = false; Invalidate(); }
     protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -424,14 +520,14 @@ public sealed class ThemedSelect : Control
 public sealed class HeroPanel : Panel
 {
     private Agent? agent;
-    private readonly ThemedButton choose = new() { Text = "エージェントを選ぶ", Primary = true, Size = new(236, 58), Anchor = AnchorStyles.Left | AnchorStyles.Bottom, TabIndex = 0 };
+    private readonly ThemedButton choose = new() { Text = "エージェントを選ぶ", Primary = true, Size = new(212, 52), Anchor = AnchorStyles.Left | AnchorStyles.Bottom, TabIndex = 0 };
     public event EventHandler? ChooseClicked;
     public HeroPanel()
     {
         DoubleBuffered = true; ResizeRedraw = true; BackColor = Theme.Surface;
-        choose.Location = new(32, Height - 90); choose.Click += (_, _) => ChooseClicked?.Invoke(this, EventArgs.Empty); Controls.Add(choose);
-        Resize += (_, _) => { choose.Left = UiMetrics.Px(this, 32); choose.Top = Height - choose.Height - UiMetrics.Px(this, 32); RoundedCorners.Apply(this, 10); };
-        RoundedCorners.Apply(this, 10);
+        choose.Location = new(29, Height - 81); choose.Click += (_, _) => ChooseClicked?.Invoke(this, EventArgs.Empty); Controls.Add(choose);
+        Resize += (_, _) => { choose.Left = UiMetrics.Px(this, 29); choose.Top = Height - choose.Height - UiMetrics.Px(this, 29); RoundedCorners.Apply(this, UiMetrics.Px(this, 9)); };
+        RoundedCorners.Apply(this, UiMetrics.Px(this, 9));
     }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public Agent? Agent
@@ -443,8 +539,9 @@ public sealed class HeroPanel : Panel
     {
         base.OnPaint(e);
         var g = e.Graphics; g.SmoothingMode = SmoothingMode.HighQuality;
+        int S(int value) => UiMetrics.Px(this, value);
         g.Clear(Theme.Surface);
-        using var clip = ThemedButton.Rounded(new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1)), 10);
+        using var clip = ThemedButton.Rounded(new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1)), S(9));
         var originalState = g.Save();
         g.SetClip(clip, CombineMode.Intersect);
         if (agent == null)
@@ -466,45 +563,48 @@ public sealed class HeroPanel : Panel
                 var ratio = (float)portrait.Width / portrait.Height;
                 var targetW = Math.Min(Width * .94f, Height * 1.20f * ratio);
                 var targetH = targetW / ratio;
-                var target = new RectangleF(Width - targetW + 34, (Height - targetH) / 2f - 4, targetW, targetH);
+                var target = new RectangleF(Width - targetW + S(34), (Height - targetH) / 2f - S(4), targetW, targetH);
                 g.DrawImage(portrait, target);
             }
-            var gradient = new Rectangle(0, 0, Math.Max(1, (int)(Width * .75)), Height);
-            using var leftShade = new LinearGradientBrush(gradient, Color.FromArgb(248, Theme.Background), Color.FromArgb(0, Theme.Background), LinearGradientMode.Horizontal);
-            g.FillRectangle(leftShade, gradient);
-            using var edge = new SolidBrush(Theme.Role(agent.Role)); g.FillRectangle(edge, 0, 0, 4, Height);
+            using var leftShade = new LinearGradientBrush(ClientRectangle, Color.FromArgb(248, Theme.Background), Color.FromArgb(0, Theme.Background), LinearGradientMode.Horizontal);
+            leftShade.InterpolationColors = new ColorBlend
+            {
+                Colors = [Color.FromArgb(248, Theme.Background), Color.FromArgb(0, Theme.Background), Color.FromArgb(0, Theme.Background)],
+                Positions = [0f, .75f, 1f]
+            };
+            g.FillRectangle(leftShade, ClientRectangle);
+            using var edge = new SolidBrush(Theme.Role(agent.Role)); g.FillRectangle(edge, 0, 0, S(4), Height);
         }
         g.Restore(originalState);
-        int S(int value) => UiMetrics.Px(this, value);
-        var header = new Rectangle(S(32), S(30), Math.Max(S(100), Width - S(64)), S(28));
-        using var headerFont = new Font("Yu Gothic UI", 11.5f, FontStyle.Bold);
-        using var promptFont = new Font("Yu Gothic UI", 29, FontStyle.Bold);
-        using var roleFont = new Font("Yu Gothic UI", 13, FontStyle.Bold);
+        var header = new Rectangle(S(29), S(27), Math.Max(S(90), Width - S(58)), S(25));
+        using var headerFont = new Font("Yu Gothic UI", UiMetrics.FontSize(10.5f), FontStyle.Bold);
+        using var promptFont = new Font("Yu Gothic UI", UiMetrics.DisplayFontSize(26), FontStyle.Bold);
+        using var roleFont = new Font("Yu Gothic UI", UiMetrics.FontSize(12), FontStyle.Bold);
         TextRenderer.DrawText(g, agent == null ? "エージェント" : "設定中のエージェント", headerFont, header, Theme.Role(agent?.Role ?? ""), TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
         if (agent == null)
         {
-            TextRenderer.DrawText(g, "エージェントを選択", promptFont, new Rectangle(S(32), S(82), Width - S(64), S(64)), Theme.Text,
+            TextRenderer.DrawText(g, "エージェントを選択", promptFont, new Rectangle(S(29), S(74), Width - S(58), S(70)), Theme.Text,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         }
         else
         {
-            var textWidth = Math.Min(Width - S(64), Math.Max(S(180), (int)(Width * .60f)));
-            var nameSize = 40f;
-            while (nameSize > 24)
+            var textWidth = Math.Min(Width - S(58), Math.Max(S(162), (int)(Width * .60f)));
+            var nameSize = UiMetrics.DisplayFontSize(36f);
+            while (nameSize > UiMetrics.DisplayFontSize(21f))
             {
                 using var measureFont = new Font("Yu Gothic UI", nameSize, FontStyle.Bold);
                 if (TextRenderer.MeasureText(agent.Name, measureFont).Width <= textWidth) break;
-                nameSize -= 2;
+                nameSize -= 1.6f;
             }
             using var nameFont = new Font("Yu Gothic UI", nameSize, FontStyle.Bold);
-            TextRenderer.DrawText(g, agent.Name, nameFont, new Rectangle(S(32), S(82), textWidth, S(64)), Theme.Text,
+            TextRenderer.DrawText(g, agent.Name, nameFont, new Rectangle(S(29), S(74), textWidth, S(70)), Theme.Text,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
             var roleColor = Theme.Role(agent.Role);
-            TextRenderer.DrawText(g, agent.Role, roleFont, new Rectangle(S(32), S(156), textWidth, S(32)), roleColor,
+            TextRenderer.DrawText(g, agent.Role, roleFont, new Rectangle(S(29), S(151), textWidth, S(29)), roleColor,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         }
         using var border = new Pen(Theme.Border);
-        using var outline = ThemedButton.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 10);
+        using var outline = ThemedButton.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), S(9));
         g.DrawPath(border, outline);
     }
     private static void DrawCover(Graphics g, Image image, Rectangle rect)
@@ -520,13 +620,13 @@ public sealed class AgentTile : Panel
     public Agent Agent { get; }
     public event EventHandler<Agent>? AgentClicked;
     private readonly bool selected;
-    private bool hover;
+    private readonly InteractionMotion motion;
     public AgentTile(Agent agent, bool selected = false)
     {
         Agent = agent; this.selected = selected; Width = 164; Height = 180; Margin = new(6); Cursor = Cursors.Hand; TabStop = true; DoubleBuffered = true;
-        SizeChanged += (_, _) => RoundedCorners.Apply(this, 9);
-        RoundedCorners.Apply(this, 9);
-        MouseEnter += (_, _) => { hover = true; Invalidate(); }; MouseLeave += (_, _) => { hover = false; Invalidate(); };
+        SizeChanged += (_, _) => RoundedCorners.Apply(this, UiMetrics.Px(this, 9));
+        RoundedCorners.Apply(this, UiMetrics.Px(this, 9));
+        motion = new InteractionMotion(this);
         MouseClick += (_, _) => AgentClicked?.Invoke(this, agent);
         MouseDown += (_, _) => Focus();
         KeyDown += (_, e) => { if (e.KeyCode is Keys.Enter or Keys.Space) AgentClicked?.Invoke(this, agent); };
@@ -534,14 +634,17 @@ public sealed class AgentTile : Panel
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = ThemedButton.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 9);
+        using var path = ThemedButton.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), UiMetrics.Px(this, 9));
         var accent = Theme.Role(Agent.Role);
-        using var fill = new SolidBrush(selected ? Color.FromArgb(36, accent) : hover ? Theme.Elevated : Theme.Surface); e.Graphics.FillPath(fill, path);
-        using var outline = new Pen(selected || hover ? accent : Theme.Border, selected ? 2 : 1); e.Graphics.DrawPath(outline, path);
+        var fillColor = selected ? InteractionMotion.Blend(Theme.Surface, accent, .14f) : Theme.Surface;
+        fillColor = InteractionMotion.Blend(fillColor, Theme.Elevated, motion.Hover * .85f);
+        fillColor = InteractionMotion.Blend(fillColor, Theme.Background, motion.Press * .55f);
+        using var fill = new SolidBrush(fillColor); e.Graphics.FillPath(fill, path);
+        using var outline = new Pen(InteractionMotion.Blend(Theme.Border, accent, selected ? 1 : motion.Hover), selected ? 2 : 1); e.Graphics.DrawPath(outline, path);
         int S(int value) => UiMetrics.Px(this, value);
         var compact = Height < S(110) || Width < S(130);
-        using var nameFont = new Font("Yu Gothic UI", compact ? 10 : 11.5f, FontStyle.Bold);
-        using var badgeFont = new Font("Yu Gothic UI", 10, FontStyle.Bold);
+        using var nameFont = new Font("Yu Gothic UI", UiMetrics.FontSize(compact ? 10 : 11.5f), FontStyle.Bold);
+        using var badgeFont = new Font("Yu Gothic UI", UiMetrics.FontSize(10), FontStyle.Bold);
         var labelHeight = S(compact ? 24 : 30);
         var iconSize = Math.Max(1, Math.Min(Width - S(24), Height - labelHeight - S(12)));
         var icon = AgentImages.Get(Agent.Id, "icon");

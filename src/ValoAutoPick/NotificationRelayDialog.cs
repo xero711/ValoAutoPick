@@ -122,7 +122,7 @@ internal sealed class NotificationRelayDialog : DarkForm
     private static Label MessageLabel() => new() { Dock = DockStyle.Fill, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft };
     private static TextBox Input() => new() { Dock = DockStyle.Fill, BackColor = Theme.Elevated, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle };
     private static FlowLayoutPanel Buttons() => new() { Dock = DockStyle.Fill, WrapContents = false, FlowDirection = FlowDirection.LeftToRight };
-    private static Button Button(string text) => new() { Text = text, AutoSize = true, Height = 38, FlatStyle = FlatStyle.Flat, BackColor = Theme.Elevated, ForeColor = Theme.Text, Margin = new Padding(0, 0, 12, 0) };
+    private static Button Button(string text) => new AnimatedNativeButton { Text = text, AutoSize = true, Height = 38, FlatStyle = FlatStyle.Flat, BackColor = Theme.Elevated, ForeColor = Theme.Text, Margin = new Padding(0, 0, 12, 0) };
 
     private static string LocalAddresses()
     {
