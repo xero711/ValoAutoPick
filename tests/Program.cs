@@ -4,6 +4,109 @@ var tests = new List<(string, Func<Task>)>();
 var now = DateTimeOffset.UtcNow;
 Settings Config() => new() { AgentId = "agent-a" };
 void Equal<T>(T expected, T actual) { if (!EqualityComparer<T>.Default.Equals(expected, actual)) throw new Exception($"Expected {expected}, got {actual}"); }
+tests.Add(("all supported modes map IDs resolve to names", () => {
+    foreach (var (key, name) in new[] { ("HURM_Alley", "ディストリクト"), ("HURM_Bowl", "カスバ"), ("HURM_Helix", "ドリフト"), ("HURM_HighTide", "グリッチ"), ("HURM_Yard", "ピアッツァ") })
+        Equal(name, MapCatalog.Name("/Game/Maps/Mode/" + key));
+    Equal(MapCatalog.Maps.Length, MapCatalog.Maps.Select(m => m.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count()); return Task.CompletedTask;
+}));
+tests.Add(("map override is selected, displayed and locked", async () => {
+    var api = new Fake { MapId = "/Game/Maps/Ascent/Ascent" }; var config = Config(); config.MapAgents["ascent"] = "agent-b"; string seen = "";
+    await new PickEngine(api, _ => { }, mapChanged: map => seen = map).Tick(config, now, default);
+    Equal("agent-b", api.Selected); Equal(1, api.Locks); Equal("アセント", MapCatalog.Name(seen));
+}));
+tests.Add(("missing map waits, unknown map uses default", async () => {
+    var api = new Fake(); var config = Config(); config.MapAgents["Ascent"] = "agent-b"; var engine = new PickEngine(api, _ => { });
+    await engine.Tick(config, now, default); Equal(0, api.Selects);
+    api.MapId = "/Game/Maps/NewMap/NewMap"; await engine.Tick(config, now, default); Equal("agent-a", api.Selected);
+}));
+tests.Add(("map configuration normalizes and preserves legacy default", () => {
+    var id = Guid.NewGuid().ToString(); var agent = Guid.NewGuid().ToString();
+    var settings = Storage.Parse("{\"AgentId\":\"" + id + "\",\"MapAgents\":{\"/Game/Maps/Ascent/Ascent\":\"" + agent + "\",\"Bad\":\"bad\"}}");
+    Equal(id, settings.AgentId); Equal(agent, settings.MapAgents["ascent"]); Equal(1, settings.MapAgents.Count); return Task.CompletedTask;
+}));
+tests.Add(("map events reset on new matches and when leaving pregame", async () => {
+    var api = new Fake { MapId = "/Game/Maps/Ascent/Ascent", State = "provisioned" }; var changes = new List<string>();
+    var engine = new PickEngine(api, _ => { }, mapChanged: changes.Add);
+    await engine.Tick(Config(), now, default); Equal("", changes[0]); Equal("Ascent", MapCatalog.Key(changes[1]));
+    api.MatchId = "match-2"; api.MapId = "/Game/Maps/Bonsai/Bonsai";
+    await engine.Tick(Config(), now, default); Equal("", changes[2]); Equal("Bonsai", MapCatalog.Key(changes[3]));
+    api.MatchId = null; await engine.Tick(Config(), now, default); Equal(4, changes.Count);
+    await engine.Tick(Config(), now.AddSeconds(6), default); Equal("", changes[4]);
+}));
+tests.Add(("auto queue map observer displays match and never picks", async () => {
+    var api = new Fake { MapId = "/Game/Maps/Ascent/Ascent" }; var changes = new List<string>(); var observer = new MapObserver(api, changes.Add);
+    await observer.Tick(default); Equal("Ascent", MapCatalog.Key(changes[^1])); Equal(0, api.Selects); Equal(0, api.Locks);
+    api.MatchId = null; await observer.Tick(default, now); Equal("Ascent", MapCatalog.Key(changes[^1]));
+    await observer.Tick(default, now.AddSeconds(6)); Equal("", changes[^1]);
+}));
+tests.Add(("completed match can restore map display after monitoring resumes", async () => {
+    var api = new Fake { MapId = "/Game/Maps/Ascent/Ascent" }; var changes = new List<string>(); var engine = new PickEngine(api, _ => { }, mapChanged: changes.Add);
+    await engine.Tick(Config(), now, default); changes.Clear(); await engine.Tick(Config(), now, default);
+    Equal("Ascent", MapCatalog.Key(changes[^1])); Equal(1, api.Locks);
+}));
+tests.Add(("pregame map remains during transition and core game then clears in lobby", async () => {
+    var api = new Fake { MapId = "/Game/Maps/Ascent/Ascent", State = "provisioned" }; var seen = new List<string>(); var engine = new PickEngine(api, _ => { }, mapChanged: seen.Add);
+    await engine.Tick(Config(), now, default); Equal("Ascent", MapCatalog.Key(seen[^1]));
+    api.MatchId = null; api.PartyState = "MATCHMADE_GAME_STARTING";
+    await engine.Tick(Config(), now.AddSeconds(2), default); Equal("Ascent", MapCatalog.Key(seen[^1]));
+    await engine.Tick(Config(), now.AddSeconds(15), default); Equal("Ascent", MapCatalog.Key(seen[^1]));
+    api.CoreMatchId = "match-1"; api.PartyState = "IN_GAME";
+    await engine.Tick(Config(), now.AddSeconds(17), default); Equal("Ascent", MapCatalog.Key(seen[^1]));
+    await engine.Tick(Config(), now.AddMinutes(5), default); Equal("Ascent", MapCatalog.Key(seen[^1]));
+    api.CoreMatchId = null; api.PartyState = "DEFAULT"; api.LocalFlow = "MainMenu";
+    await engine.Tick(Config(), now.AddMinutes(5).AddSeconds(2), default); Equal("", seen[^1]);
+}));
+tests.Add(("queue-only observer retains map during match and clears after return", async () => {
+    var api = new Fake { MapId = "/Game/Maps/Pitt/Pitt" }; var seen = new List<string>(); var observer = new MapObserver(api, seen.Add);
+    await observer.Tick(default, now); api.MatchId = null; api.CoreMatchId = "match-1"; api.PartyState = "IN_GAME";
+    await observer.Tick(default, now.AddSeconds(2)); Equal("Pitt", MapCatalog.Key(seen[^1]));
+    api.CoreMatchId = null; await observer.Tick(default, now.AddSeconds(4)); Equal("Pitt", MapCatalog.Key(seen[^1]));
+    api.PartyState = "DEFAULT"; api.LocalFlow = "MainMenu"; await observer.Tick(default, now.AddSeconds(6)); Equal("", seen[^1]);
+    Equal(0, api.Selects); Equal(0, api.Locks);
+}));
+tests.Add(("start monitoring during game retrieves core map and retries unavailable data", async () => {
+    var api = new Fake { MatchId = null, CoreMatchId = "core-1", PartyState = "IN_GAME" }; var seen = new List<string>(); var engine = new PickEngine(api, _ => { }, mapChanged: seen.Add);
+    await engine.Tick(Config(), now, default); Equal(0, seen.Count);
+    api.CoreMapId = "/Game/Maps/Port/Port"; await engine.Tick(Config(), now.AddSeconds(2), default); Equal("Port", MapCatalog.Key(seen[^1])); Equal(0, api.Locks);
+    api.CoreMatchId = null; api.PartyState = null; await engine.Tick(Config(), now.AddSeconds(4), default); Equal("Port", MapCatalog.Key(seen[^1]));
+    api.PartyState = "DEFAULT"; api.LocalFlow = "MainMenu"; await engine.Tick(Config(), now.AddSeconds(6), default); Equal("", seen[^1]);
+}));
+tests.Add(("core-game API reads match ID map and current party state", async () => {
+    var transport = new Transport { PregameAvailable = false, CoregameAvailable = true }; using var api = new RiotApi(transport);
+    await api.Login(new AuthResult("fake-access", "fake-id", now.AddHours(1)), "ap", default);
+    var coreId = await api.GetCoreMatchId(default); Equal("22222222-2222-2222-2222-222222222222", coreId);
+    Equal("/Game/Maps/Ascent/Ascent", await api.GetCoreMapId(coreId!, default)); Equal("DEFAULT", await api.GetPartyState(default));
+    transport.CoregameAvailable = false; Equal<string?>(null, await api.GetCoreMatchId(default));
+}));
+tests.Add(("local game flow prevents transient lobby state from clearing the map", async () => {
+    var api = new Fake { MapId = "/Game/Maps/Ascent/Ascent", State = "provisioned" }; var seen = new List<string>(); var engine = new PickEngine(api, _ => { }, mapChanged: seen.Add);
+    await engine.Tick(Config(), now, default); api.MatchId = null; api.PartyState = "DEFAULT"; api.LocalFlow = "TransitionToInGame";
+    await engine.Tick(Config(), now.AddSeconds(1), default); await engine.Tick(Config(), now.AddSeconds(60), default); Equal("Ascent", MapCatalog.Key(seen[^1]));
+    api.LocalFlow = "InGame"; await engine.Tick(Config(), now.AddSeconds(62), default); Equal("Ascent", MapCatalog.Key(seen[^1]));
+    api.LocalFlow = "MainMenu"; await engine.Tick(Config(), now.AddSeconds(64), default);
+    await engine.Tick(Config(), now.AddSeconds(70), default); Equal("", seen[^1]);
+}));
+tests.Add(("game flow parser reads most recent state", () => {
+    Equal("InGame", RiotApi.GameFlowStateFromLog("LogGameFlowStateManager: Broadcasting state changed to Pregame\nLogGameFlowStateManager: Broadcasting state changed to InGame"));
+    Equal<string?>(null, RiotApi.GameFlowStateFromLog("no state")); return Task.CompletedTask;
+}));
+tests.Add(("temporary core-game outage does not clear map before lobby confirmation", async () => {
+    var api = new Fake { MatchId = null, CoreMatchId = "core-1", CoreMapId = "/Game/Maps/Pitt/Pitt", PartyState = "IN_GAME" }; var seen = new List<string>(); var engine = new PickEngine(api, _ => { }, mapChanged: seen.Add);
+    await engine.Tick(Config(), now, default); api.CoreMatchId = null; api.PartyState = "DEFAULT";
+    await engine.Tick(Config(), now.AddSeconds(2), default); Equal("Pitt", MapCatalog.Key(seen[^1]));
+    api.CoreMatchId = "core-1"; api.PartyState = "IN_GAME"; await engine.Tick(Config(), now.AddSeconds(4), default); Equal("Pitt", MapCatalog.Key(seen[^1]));
+    api.CoreMatchId = null; api.PartyState = "DEFAULT"; await engine.Tick(Config(), now.AddSeconds(6), default); Equal("Pitt", MapCatalog.Key(seen[^1]));
+    await engine.Tick(Config(), now.AddSeconds(10), default); Equal("", seen[^1]);
+}));
+tests.Add(("core-game rejects a different match and retries absent map", async () => {
+    var transport = new Transport { CoregameAvailable = true }; using var api = new RiotApi(transport);
+    await api.Login(new AuthResult("fake-access", "fake-id", now.AddHours(1)), "ap", default);
+    const string id = "22222222-2222-2222-2222-222222222222";
+    transport.MatchResponse = """{"MatchID":"33333333-3333-3333-3333-333333333333","MapID":"/Game/Maps/Port/Port"}""";
+    try { await api.GetCoreMapId(id, default); throw new Exception("Accepted a different match"); } catch (InvalidDataException) { }
+    transport.MatchResponse = """{"MatchID":"22222222-2222-2222-2222-222222222222","MapID":""}""";
+    Equal<string?>(null, await api.GetCoreMapId(id, default));
+}));
 tests.Add(("idle never selects", async () => { var api = new Fake { MatchId = null }; await new PickEngine(api, _ => { }).Tick(Config(), now, default); Equal(0, api.Selects); }));
 tests.Add(("two consecutive matches and duplicate suppression", async () =>
 {
@@ -492,7 +595,7 @@ tests.Add(("remote account login derives region and does not leak tokens to meta
     Equal("glz-br-1.na.a.pvp.net", transport.Calls[^1].Uri.Host);
     Equal("Bearer fake-access", transport.Calls[^1].Authorization);
     Equal("fake-entitlement", transport.Calls[^1].Entitlement);
-    var snapshot = await api.GetMatch(match!, default); Equal(1, snapshot.Allies.Count);
+    var snapshot = await api.GetMatch(match!, default); Equal(1, snapshot.Allies.Count); Equal("/Game/Maps/Ascent/Ascent", snapshot.MapId);
     await api.Select(match!, "33333333-3333-3333-3333-333333333333", default);
     Equal(HttpMethod.Post, transport.Calls[^1].Method);
     await api.Lock(match!, "33333333-3333-3333-3333-333333333333", default);
@@ -529,19 +632,24 @@ return failures == 0 ? 0 : 1;
 sealed class Fake : IGameApi
 {
     public string Subject => "me";
-    public string? MatchId = "match-1";
-    public string State = "character_select_active", SelfState = "", Selected = "";
+    public string? MatchId = "match-1", CoreMatchId, CoreMapId;
+    public string? PartyState = "DEFAULT", LocalFlow;
+    public string State = "character_select_active", SelfState = "", Selected = "", MapId = "";
     public bool IncludeSelf = true, LoseLockResponse;
     public List<Player> Others = [];
     public string? RejectAgent;
     public int Selects, Locks, SelectError;
     public Action? AfterSelect;
     public Task<string?> GetMatchId(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(MatchId); }
+    public Task<string?> GetCoreMatchId(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(CoreMatchId); }
+    public Task<string?> GetCoreMapId(string id, CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(CoreMapId); }
+    public Task<string?> GetPartyState(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(PartyState); }
+    public Task<string?> GetLocalGameFlowState(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(LocalFlow); }
     public Task<MatchSnapshot> GetMatch(string id, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested(); var players = new List<Player>(Others);
         if (IncludeSelf) players.Add(new(Subject, Selected, SelfState));
-        return Task.FromResult(new MatchSnapshot(MatchId!, State, players));
+        return Task.FromResult(new MatchSnapshot(MatchId!, State, players, MapId));
     }
     public Task Select(string match, string agent, CancellationToken ct)
     {
@@ -597,8 +705,9 @@ sealed class Transport : HttpMessageHandler
             _ when req.RequestUri.AbsolutePath.EndsWith("/matchmaking/join") => """{"ID":"44444444-4444-4444-4444-444444444444"}""",
             _ when req.RequestUri.AbsolutePath.EndsWith("/matchmaking/leave") => "{}",
             _ when req.RequestUri.AbsolutePath.Contains("/parties/v1/parties/") => PartyResponse ?? """{"ID":"44444444-4444-4444-4444-444444444444","State":"DEFAULT","Members":[{"Subject":"11111111-1111-1111-1111-111111111111","IsOwner":true}],"MatchmakingData":{"QueueID":"competitive"},"QueueEntryTime":"QUEUE_ENTRY_TIME","RestrictedSeconds":0,"EligibleQueues":["competitive","unrated"],"QueueIneligibilities":[]}""".Replace("QUEUE_ENTRY_TIME", QueueEntryTime),
+            _ when req.RequestUri.AbsolutePath.Contains("/core-game/v1/matches/") => MatchResponse ?? """{"MatchID":"22222222-2222-2222-2222-222222222222","MapID":"/Game/Maps/Ascent/Ascent"}""",
             _ when req.RequestUri.AbsolutePath.Contains("/players/") => """{"MatchID":"22222222-2222-2222-2222-222222222222"}""",
-            _ => MatchResponse ?? """{"ID":"22222222-2222-2222-2222-222222222222","PregameState":"character_select_active","AllyTeam":{"Players":[{"Subject":"11111111-1111-1111-1111-111111111111","CharacterID":"","CharacterSelectionState":""}]}}"""
+            _ => MatchResponse ?? """{"ID":"22222222-2222-2222-2222-222222222222","PregameState":"character_select_active","MapID":"/Game/Maps/Ascent/Ascent","AllyTeam":{"Players":[{"Subject":"11111111-1111-1111-1111-111111111111","CharacterID":"","CharacterSelectionState":""}]}}"""
         };
         var status = req.RequestUri.Host.EndsWith(".pvp.net") ? GameStatus : 200;
         if (status == 200 && req.RequestUri.AbsolutePath.Contains("/core-game/v1/players/") && !CoregameAvailable) status = 404;

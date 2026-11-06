@@ -6,13 +6,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon>Assets\ValoAutoPick-icon.ico</ApplicationIcon>
-    <AssemblyName>ValoAutoPick</AssemblyName>
-    <Version>1.2.1</Version>
+    <ApplicationIcon>Assets\QuickPickerPro-transparent.ico</ApplicationIcon>
+    <AssemblyName>QuickPickerPro</AssemblyName>
+    <RootNamespace>ValoAutoPick</RootNamespace>
+    <Version>1.3.1</Version>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="agents.json" />
-    <EmbeddedResource Include="Assets/ValoAutoPick-icon.ico" LogicalName="ValoAutoPick.Assets.ValoAutoPick-icon.ico" />
+    <EmbeddedResource Include="Assets/QuickPickerPro-transparent.ico" LogicalName="ValoAutoPick.Assets.QuickPickerPro-transparent.ico" />
+    <EmbeddedResource Include="Assets/Maps/*.jpg" LogicalName="ValoAutoPick.Assets.Maps.%(Filename)%(Extension)" />
     <EmbeddedResource Include="Assets/Agents/*.png" LogicalName="ValoAutoPick.Assets.Agents.%(Filename)%(Extension)" />
     <EmbeddedResource Include="Assets/Agents/*.jpg" LogicalName="ValoAutoPick.Assets.Agents.%(Filename)%(Extension)" />
   </ItemGroup>
@@ -20,4 +22,3 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
   </ItemGroup>
 </Project>
-

@@ -15,7 +15,6 @@ public sealed class MainWindow : DarkForm
     private const int ClientUnavailableIntervalMilliseconds = 1500;
     private const int TransientFailureIntervalMilliseconds = 2500;
 
-    private static readonly byte[] AppIconBytes = LoadAppIconBytes();
     private static readonly string[] RegionValues = ["auto", "ap", "na", "eu", "kr", "br", "latam", "pbe"];
     private readonly ThemedSelect region = RegionCombo();
     private readonly SwitchToggle autoStart = new("自動で監視開始", false);
@@ -26,12 +25,16 @@ public sealed class MainWindow : DarkForm
     private readonly ThemedButton autoQueue = new() { Text = "自動インキュー開始", Font = new Font("Yu Gothic UI", 13.5f, FontStyle.Bold), AccessibleDescription = "ゲーム内で選択中のモードに自動で参加します" };
     private readonly HeroPanel hero = new();
     private readonly RoundedCard settingsPanel = new() { Dock = DockStyle.Fill };
+    private readonly RoundedCard mapSettingsCard = new() { Dock = DockStyle.Fill };
+    private readonly MatchMapPanel matchMap = new() { Dock = DockStyle.Fill };
+    private readonly Label mapSummary = new() { Dock = DockStyle.Fill, ForeColor = Theme.Muted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+    private string displayedMap = "";
     private readonly RoundedCard startPanel = new() { Dock = DockStyle.Fill };
     private readonly Label status = new() { Text = "停止中", ForeColor = Theme.Muted, Font = new Font("Yu Gothic UI", 8.2f, FontStyle.Bold), AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill };
     private readonly Label detail = new() { Text = "", ForeColor = Theme.Muted, Font = new Font("Yu Gothic UI", 8.2f), AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill };
     private readonly Label queueDetail = new() { Text = "自動インキューは停止中", ForeColor = Theme.Muted, Font = new Font("Yu Gothic UI", 8.2f), AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill };
     private readonly Label accountInfo = new() { Text = "Riotアカウント: 未接続", ForeColor = Theme.Muted, Font = new Font("Yu Gothic UI", 9.5f), AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill };
-    private readonly NotifyIcon tray = new() { Icon = LoadAppIcon(), Text = "Valo Auto Pick", Visible = true };
+    private readonly NotifyIcon tray = new() { Icon = AppIcon.Create(), Text = "QuickPickerPro", Visible = true };
     private readonly RiotApi api = new();
     private readonly CancellationTokenSource lifetime = new();
     private LoginWindow? loginWindow;
@@ -48,16 +51,17 @@ public sealed class MainWindow : DarkForm
     private Panel? statusLed;
     private List<Agent> agents = [];
     private Agent? mainAgent;
+    private Dictionary<string, string> mapAgents = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ThemedButton mapSettings = new() { Text = "マップ別エージェント設定", Compact = true, Dock = DockStyle.Fill };
     private readonly string? smokePath;
     private readonly string? previewAgentId;
 
-    public MainWindow(string? smokePath = null, bool loginSmokeTest = false, string? previewAgentId = null, bool pickerSmokeTest = false)
+    public MainWindow(string? smokePath = null, bool loginSmokeTest = false, string? previewAgentId = null, bool pickerSmokeTest = false, bool mapSmokeTest = false)
     {
         this.smokePath = smokePath;
         this.previewAgentId = previewAgentId;
-        Text = "ValBuddy";
-        Icon = LoadAppIcon();
-        ClientSize = new Size(940, 648); MinimumSize = new Size(820, 565); StartPosition = FormStartPosition.CenterScreen;
+        Text = "QuickPickerPro";
+        ClientSize = new Size(1160, 800); MinimumSize = new Size(920, 680); StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Background; ForeColor = Theme.Text; Font = new Font("Yu Gothic UI", 10.5f);
 
         using var resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("ValoAutoPick.agents.json");
@@ -71,6 +75,7 @@ public sealed class MainWindow : DarkForm
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { }
 
         var config = Storage.Load(); RestoreAgent(config);
+        mapAgents = new(config.MapAgents, StringComparer.OrdinalIgnoreCase);
         systemBrowserLogin = config.SystemBrowserLogin;
         if (previewAgentId != null) mainAgent = agents.FirstOrDefault(a => a.Id.Equals(previewAgentId, StringComparison.OrdinalIgnoreCase));
         autoStart.Checked = config.StartOnLaunch;
@@ -79,28 +84,31 @@ public sealed class MainWindow : DarkForm
         var root = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background, AutoScroll = true };
         var header = BuildHeader(); header.Dock = DockStyle.None; header.TabIndex = 0;
         var dashboard = BuildDashboard(); dashboard.Dock = DockStyle.None; dashboard.TabIndex = 1;
-        root.Controls.Add(dashboard); root.Controls.Add(header);
+        var version = new Label { Text = "v" + (Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? ""), ForeColor = Theme.Muted, BackColor = Theme.Background, Font = new Font("Segoe UI", 8.5f), TextAlign = ContentAlignment.MiddleRight, AutoSize = false, TabStop = false, AccessibleName = "バージョン" };
+        root.Controls.Add(dashboard); root.Controls.Add(header); root.Controls.Add(version);
         Controls.Add(root);
         void ArrangeRoot()
         {
-            var width = Math.Max(UiMetrics.Px(this, 738), root.ClientSize.Width - UiMetrics.Px(this, 39));
-            var height = Math.Max(UiMetrics.Px(this, 551), root.ClientSize.Height - UiMetrics.Px(this, 87));
+            var width = Math.Max(UiMetrics.Px(this, 850), root.ClientSize.Width - UiMetrics.Px(this, 39));
+            var height = Math.Max(UiMetrics.Px(this, 640), root.ClientSize.Height - UiMetrics.Px(this, 87));
             var offset = root.AutoScrollPosition;
             header.Bounds = new Rectangle(offset.X + UiMetrics.Px(this, 20), offset.Y + UiMetrics.Px(this, 13), width, UiMetrics.Px(this, 49));
             dashboard.Bounds = new Rectangle(offset.X + UiMetrics.Px(this, 20), offset.Y + UiMetrics.Px(this, 68), width, height);
+            version.Bounds = new Rectangle(offset.X + UiMetrics.Px(this, 20), offset.Y + UiMetrics.Px(this, 68) + height, width, UiMetrics.Px(this, 19));
         }
         root.Layout += (_, _) => ArrangeRoot();
         ArrangeRoot();
 
-        SetHero();
+        SetHero(); UpdateMapSummary();
         hero.ChooseClicked += (_, _) => PickAgent();
+        mapSettings.Click += (_, _) => ConfigureMaps();
         login.Click += async (_, _) => await SignIn();
         logout.Click += async (_, _) => await SignOut();
         start.Click += async (_, _) => await TogglePickMonitoring();
         autoQueue.Click += async (_, _) => await ToggleAutoQueue();
         region.SelectedIndexChanged += async (_, _) => { SaveSettings(); if (api.HasAccountSession) await SignOut(clearBrowserSession: false); };
         autoStart.CheckedChanged += (_, _) => SaveSettings();
-        Resize += (_, _) => { if (WindowState == FormWindowState.Minimized) { Hide(); tray.ShowBalloonTip(1500, "Valo Auto Pick", monitor != null ? autoQueueActive ? "自動インキューを監視中です" : "自動ピックを監視中です" : "監視は停止中です", ToolTipIcon.Info); } };
+        Resize += (_, _) => { if (WindowState == FormWindowState.Minimized) { Hide(); tray.ShowBalloonTip(1500, "QuickPickerPro", monitor != null ? autoQueueActive ? "自動インキューを監視中です" : "自動ピックを監視中です" : "監視は停止中です", ToolTipIcon.Info); } };
         tray.DoubleClick += (_, _) => Restore();
         var menu = new ContextMenuStrip();
         menu.Items.Add("開く", null, (_, _) => Restore());
@@ -127,6 +135,19 @@ public sealed class MainWindow : DarkForm
                     catch (Exception e) { File.WriteAllText(Path.ChangeExtension(smokePath, ".error.txt"), e.GetType().Name); }
                     Close(); return;
                 }
+                if (mapSmokeTest)
+                {
+                    using var dialog = new MapSettingsDialog(agents, mapAgents);
+                    dialog.Shown += async (_, _) =>
+                    {
+                        await Task.Delay(900); dialog.TopMost = true; dialog.Activate();
+                        if (Environment.GetCommandLineArgs().Contains("--preview-bottom")) { dialog.PreviewBottom(); await Task.Delay(300); }
+                        using var shot = new Bitmap(dialog.Width, dialog.Height);
+                        using (var graphics = Graphics.FromImage(shot)) graphics.CopyFromScreen(dialog.Location, Point.Empty, dialog.Size);
+                        shot.Save(smokePath); dialog.DialogResult = DialogResult.Cancel; dialog.Close();
+                    };
+                    dialog.ShowDialog(this); Close(); return;
+                }
                 if (pickerSmokeTest)
                 {
                     using var picker = new AgentPickerDialog(agents, mainAgent?.Id);
@@ -143,7 +164,11 @@ public sealed class MainWindow : DarkForm
                     };
                     picker.ShowDialog(this); Close(); return;
                 }
+                var previewMap = Environment.GetCommandLineArgs().SkipWhile(x => x != "--preview-map").Skip(1).FirstOrDefault();
+                if (previewMap != null) UpdateMap(previewMap);
+                if (Environment.GetCommandLineArgs().Contains("--preview-logged-out")) Report("未ログイン");
                 Hide(); Show(); TopMost = true; Activate();
+                if (Environment.GetCommandLineArgs().Contains("--preview-connected")) { ApplyAccountLabels(true, "ExamplePlayer#1234"); login.Enabled = false; logout.Visible = true; }
                 await Task.Delay(700);
                 using var bitmap = new Bitmap(Width, Height);
                 using (var graphics = Graphics.FromImage(bitmap)) graphics.CopyFromScreen(Location, Point.Empty, Size);
@@ -160,23 +185,6 @@ public sealed class MainWindow : DarkForm
         };
     }
 
-    private static byte[] LoadAppIconBytes()
-    {
-        using var resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("ValoAutoPick.Assets.ValoAutoPick-icon.ico");
-        if (resource == null) return [];
-        using var copy = new MemoryStream();
-        resource.CopyTo(copy);
-        return copy.ToArray();
-    }
-
-    private static Icon LoadAppIcon()
-    {
-        if (AppIconBytes.Length == 0) return SystemIcons.Application;
-        using var stream = new MemoryStream(AppIconBytes, writable: false);
-        using var source = new Icon(stream);
-        return new Icon(source, source.Size);
-    }
-
     private Control BuildHeader()
     {
         var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Theme.Background, Margin = Padding.Empty };
@@ -185,14 +193,10 @@ public sealed class MainWindow : DarkForm
         var brand = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background };
         brand.Paint += (_, e) =>
         {
-            int S(int value) => UiMetrics.Px(brand, value);
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var path = new GraphicsPath(); path.AddPolygon([new Point(S(3), S(4)), new Point(S(24), S(4)), new Point(S(36), S(16)), new Point(S(24), S(40)), new Point(S(3), S(40)), new Point(S(15), S(22))]);
-            using var brush = new SolidBrush(Theme.Red); e.Graphics.FillPath(brush, path);
-            using var cut = new SolidBrush(Theme.Background); cut.Color = Color.FromArgb(95, Theme.Background);
-            e.Graphics.FillPolygon(cut, [new Point(S(18), S(10)), new Point(S(23), S(10)), new Point(S(13), S(32)), new Point(S(8), S(32))]);
+            var size = UiMetrics.Px(brand, 40);
+            if (Icon != null) e.Graphics.DrawIcon(Icon, new Rectangle(0, UiMetrics.Px(brand, 1), size, size));
         };
-        brand.Controls.Add(new Label { Text = "VALBUDDY", ForeColor = Theme.Text, Font = new Font("Segoe UI", 18, FontStyle.Bold), AutoSize = true, Location = new Point(43, 2) });
+        brand.Controls.Add(new Label { Text = "QuickPickerPro", ForeColor = Theme.Text, Font = new Font("Segoe UI", 18, FontStyle.Bold), AutoSize = true, Location = new Point(49, 2) });
         var loginBar = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(0, 4, 0, 0), Margin = Padding.Empty };
         logout.Margin = new Padding(7, 0, 0, 0); login.Margin = Padding.Empty;
         loginBar.Controls.Add(login); loginBar.Controls.Add(logout);
@@ -202,46 +206,45 @@ public sealed class MainWindow : DarkForm
 
     private Control BuildDashboard()
     {
-        var columns = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Background, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty, Padding = new Padding(0, 6, 0, 6) };
-        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54)); columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
-        columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        hero.Dock = DockStyle.Fill; hero.Margin = new Padding(0, 0, 16, 0);
-        settingsPanel.Margin = new Padding(0, 0, 0, 13); startPanel.Margin = Padding.Empty;
-
-        var sidebar = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Background, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
+        var columns = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Background, ColumnCount = 2, RowCount = 2, Margin = Padding.Empty, Padding = new Padding(0, 6, 0, 6) };
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58)); columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        columns.RowStyles.Add(new RowStyle(SizeType.Percent, 50)); columns.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        matchMap.Margin = new Padding(0, 0, 16, 7);
+        hero.Dock = DockStyle.Fill; hero.Margin = new Padding(0, 7, 16, 0);
+        var sidebar = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Background, ColumnCount = 1, RowCount = 2, Margin = new Padding(0, 0, 0, 7) };
         sidebar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        sidebar.RowStyles.Add(new RowStyle(SizeType.Absolute, 252)); sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        sidebar.Controls.Add(settingsPanel, 0, 0);
-        sidebar.Controls.Add(startPanel, 0, 1);
-        columns.Controls.Add(hero, 0, 0); columns.Controls.Add(sidebar, 1, 0);
+        sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 57)); sidebar.RowStyles.Add(new RowStyle(SizeType.Percent, 43));
+        settingsPanel.Margin = new Padding(0, 0, 0, 12); mapSettingsCard.Margin = Padding.Empty; startPanel.Margin = new Padding(0, 7, 0, 0);
+        sidebar.Controls.Add(settingsPanel, 0, 0); sidebar.Controls.Add(mapSettingsCard, 0, 1);
+        columns.Controls.Add(matchMap, 0, 0); columns.Controls.Add(hero, 0, 1);
+        columns.Controls.Add(sidebar, 1, 0); columns.Controls.Add(startPanel, 1, 1);
 
-        var connection = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(8, 4, 8, 4), RowCount = 5, ColumnCount = 1, Margin = Padding.Empty };
+        var connection = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(9, 4, 9, 4), RowCount = 4, ColumnCount = 1, Margin = Padding.Empty };
         connection.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
-        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
-        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-        connection.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 32)); connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 52)); connection.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         connection.Controls.Add(SectionTitle("接続設定"), 0, 0);
-        accountInfo.Font = new Font("Yu Gothic UI", 9.5f, FontStyle.Bold);
-        connection.Controls.Add(accountInfo, 0, 1);
+        accountInfo.Font = new Font("Yu Gothic UI", 9.5f, FontStyle.Bold); connection.Controls.Add(accountInfo, 0, 1);
         var regionRow = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
         regionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94)); regionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         regionRow.Controls.Add(FieldLabel("接続地域"), 0, 0); region.Dock = DockStyle.Fill; region.Margin = Padding.Empty; regionRow.Controls.Add(region, 1, 0);
         connection.Controls.Add(regionRow, 0, 2);
-        autoStart.Margin = new Padding(0, 6, 0, 0); autoStart.Dock = DockStyle.Fill; connection.Controls.Add(autoStart, 0, 3);
+        autoStart.Margin = new Padding(0, 4, 0, 0); autoStart.Dock = DockStyle.Fill; connection.Controls.Add(autoStart, 0, 3);
         settingsPanel.Controls.Add(connection);
 
-        var action = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(8, 6, 8, 6), RowCount = 8, ColumnCount = 1, Margin = Padding.Empty };
+        var maps = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(9, 5, 9, 6), ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
+        maps.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        maps.RowStyles.Add(new RowStyle(SizeType.Absolute, 32)); maps.RowStyles.Add(new RowStyle(SizeType.Absolute, 30)); maps.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        maps.Controls.Add(SectionTitle("マップ別設定"), 0, 0);
+        mapSummary.Font = new Font("Yu Gothic UI", 9.5f); mapSummary.Margin = Padding.Empty; maps.Controls.Add(mapSummary, 0, 1);
+        mapSettings.Margin = new Padding(0, 4, 0, 1); maps.Controls.Add(mapSettings, 0, 2); mapSettingsCard.Controls.Add(maps);
+
+        var action = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(9, 6, 9, 6), RowCount = 8, ColumnCount = 1, Margin = Padding.Empty };
         action.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        action.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        action.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
-        action.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
-        action.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
-        action.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        action.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        action.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        action.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        action.RowStyles.Add(new RowStyle(SizeType.Percent, 50)); action.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
+        action.RowStyles.Add(new RowStyle(SizeType.Absolute, 54)); action.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        action.RowStyles.Add(new RowStyle(SizeType.Absolute, 30)); action.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        action.RowStyles.Add(new RowStyle(SizeType.Absolute, 30)); action.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         action.Controls.Add(SectionTitle("自動ピック"), 0, 1);
         start.Dock = DockStyle.Fill; start.Margin = new Padding(0, 0, 0, 5); start.Text = pickMonitoring ? "監視を停止" : "監視を開始"; action.Controls.Add(start, 0, 2);
         autoQueue.Dock = DockStyle.Fill; autoQueue.Margin = Padding.Empty; action.Controls.Add(autoQueue, 0, 3);
@@ -251,19 +254,15 @@ public sealed class MainWindow : DarkForm
         var led = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty }; statusLed = led;
         led.Paint += (_, e) =>
         {
-            var color = monitor == null ? Theme.Muted : Theme.Green;
-            var diameter = UiMetrics.Px(led, 10);
+            var color = monitor == null ? Theme.Muted : Theme.Green; var diameter = UiMetrics.Px(led, 10);
             using var brush = new SolidBrush(color); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; e.Graphics.FillEllipse(brush, UiMetrics.Px(led, 2), (led.Height - diameter) / 2, diameter, diameter);
         };
         status.Font = new Font("Yu Gothic UI", 10.5f, FontStyle.Bold); status.Margin = Padding.Empty;
         detail.Font = new Font("Yu Gothic UI", 10); detail.Margin = Padding.Empty;
         queueDetail.Font = new Font("Yu Gothic UI", 9); queueDetail.Margin = Padding.Empty;
         statusRow.Controls.Add(led, 0, 0); statusRow.Controls.Add(status, 1, 0);
-        action.Controls.Add(statusRow, 0, 4);
-        action.Controls.Add(detail, 0, 5);
-        action.Controls.Add(queueDetail, 0, 6);
-        startPanel.Controls.Add(action);
-        return columns;
+        action.Controls.Add(statusRow, 0, 4); action.Controls.Add(detail, 0, 5); action.Controls.Add(queueDetail, 0, 6);
+        startPanel.Controls.Add(action); return columns;
     }
 
     private static Label SectionTitle(string text) => new() { Text = text, ForeColor = Theme.Text, Font = new Font("Yu Gothic UI", 12.5f, FontStyle.Bold), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
@@ -273,7 +272,16 @@ public sealed class MainWindow : DarkForm
         Agent? Find(string id) => agents.FirstOrDefault(a => a.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
         mainAgent = string.IsNullOrWhiteSpace(config.AgentId) ? null : Find(config.AgentId);
     }
-    private void SetHero() { hero.Agent = mainAgent; }
+    private void SetHero() { hero.Agent = mainAgent; UpdateMap(displayedMap); }
+    private void UpdateMapSummary() => mapSummary.Text = $"{MapCatalog.Maps.Count(m => mapAgents.ContainsKey(m.Key))} マップで個別設定中";
+    private void UpdateMap(string? mapId)
+    {
+        displayedMap = mapId ?? "";
+        var key = MapCatalog.Key(displayedMap);
+        var selectedId = mapAgents.TryGetValue(key, out var mapped) ? mapped : mainAgent?.Id;
+        var selected = agents.FirstOrDefault(a => a.Id.Equals(selectedId, StringComparison.OrdinalIgnoreCase));
+        matchMap.SetMatch(displayedMap, selected?.Name ?? "");
+    }
     private void ConfigureRelay()
     {
         using var dialog = new NotificationRelayDialog();
@@ -291,9 +299,17 @@ public sealed class MainWindow : DarkForm
         UpdateConnectionUi();
     }
 
+    private void ConfigureMaps()
+    {
+        using var dialog = new MapSettingsDialog(agents, mapAgents);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        mapAgents = dialog.MapAgents; UpdateMapSummary(); UpdateMap(displayedMap); SaveSettings();
+    }
+
     private Settings ReadSettings() => new Settings
     {
         AgentId = mainAgent?.Id ?? "",
+        MapAgents = new(mapAgents, StringComparer.OrdinalIgnoreCase),
         StartOnLaunch = autoStart.Checked,
         Region = RegionValues[Math.Clamp(region.SelectedIndex, 0, RegionValues.Length - 1)],
         SystemBrowserLogin = systemBrowserLogin
@@ -308,13 +324,11 @@ public sealed class MainWindow : DarkForm
 
     private void UpdateConnectionUi()
     {
-        login.Text = api.HasAccountSession ? "接続済み" : loginAttempt != null ? "ログインを中止" : "Riotにログイン";
+        ApplyAccountLabels(api.HasAccountSession, api.AccountName);
         login.Primary = false;
         login.Visible = true;
         login.Enabled = !closing && (loginAttempt != null || !busy && monitor == null && !api.HasAccountSession);
         logout.Visible = api.HasAccountSession;
-        accountInfo.Text = api.HasAccountSession ? $"Riotアカウント: 接続済み · {api.AccountName} · {api.RegionLabel}" : "Riotアカウント: 未接続";
-        accountInfo.ForeColor = api.HasAccountSession ? Theme.Green : Theme.Muted;
         login.AccessibleName = api.HasAccountSession ? $"接続済み: {api.AccountName} / {api.RegionLabel}" : loginAttempt != null ? "ログインを中止" : "Riotアカウントにログイン";
         start.Text = stopping ? "停止中…" : pickMonitoring ? "監視を停止" : "監視を開始";
         start.Enabled = !busy && !closing && !stopping;
@@ -325,6 +339,19 @@ public sealed class MainWindow : DarkForm
         if (!autoQueueActive) SetQueueStatus("自動インキューは停止中");
         start.Invalidate();
         autoQueue.Invalidate();
+    }
+
+    private void ApplyAccountLabels(bool connected, string accountName)
+    {
+        login.Text = connected ? accountName : loginAttempt != null ? "ログインを中止" : "Riotにログイン";
+        accountInfo.Text = connected ? "接続済み" : "Riotアカウント: 未接続";
+        accountInfo.ForeColor = connected ? Theme.Green : Theme.Muted;
+        if (IsHandleCreated)
+        {
+            var minimum = UiMetrics.Px(login, 176);
+            var maximum = UiMetrics.Px(login, 350);
+            login.Width = connected ? Math.Clamp(TextRenderer.MeasureText(login.Text, login.Font).Width + UiMetrics.Px(login, 32), minimum, maximum) : minimum;
+        }
     }
 
     private async Task SignIn()
@@ -357,7 +384,7 @@ public sealed class MainWindow : DarkForm
     {
         if (!busy && !closing && !lifetime.IsCancellationRequested &&
             (config.SystemBrowserLogin || Directory.Exists(LoginWindow.ProfileFolder)))
-            Report("ブラウザーでのログインが必要です");
+            Report("未ログイン");
         return Task.CompletedTask;
     }
 
@@ -377,6 +404,7 @@ public sealed class MainWindow : DarkForm
     private void SetInputEnabled(bool enabled)
     {
         settingsPanel.Enabled = region.Enabled = autoStart.Enabled = enabled;
+        mapSettingsCard.Enabled = enabled;
         hero.Enabled = enabled;
         login.Enabled = enabled && !api.HasAccountSession;
         logout.Enabled = enabled && api.HasAccountSession;
@@ -392,7 +420,7 @@ public sealed class MainWindow : DarkForm
             await StopMonitor();
             return;
         }
-        if (mainAgent == null) { Report("エージェントを選んでください"); return; }
+        if (mainAgent == null && mapAgents.Count == 0) { Report("エージェントを選んでください"); return; }
         pickMonitoring = true;
         if (monitor == null) StartMonitor();
         if (monitor == null) pickMonitoring = false;
@@ -435,7 +463,7 @@ public sealed class MainWindow : DarkForm
             return;
         }
         var settings = ReadSettings();
-        if (pickMonitoring && string.IsNullOrEmpty(settings.AgentId)) { Report("エージェントを選んでください"); return; }
+        if (pickMonitoring && string.IsNullOrEmpty(settings.AgentId) && settings.MapAgents.Count == 0) { Report("エージェントを選んでください"); return; }
         if (!api.HasAccountSession) { Report("Riotアカウントにログインしてください"); return; }
         if (!SaveSettings()) return;
         monitor = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
@@ -450,6 +478,7 @@ public sealed class MainWindow : DarkForm
     private async Task RunMonitor(Settings settings, CancellationToken ct)
     {
         Report("マッチを検索中");
+        var mapObserver = new MapObserver(api, UpdateMap);
         using var notificationsStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var queueSignals = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
         Task? notifications = null;
@@ -546,7 +575,7 @@ public sealed class MainWindow : DarkForm
                     }
                     if (pickMonitoring)
                     {
-                        if (engine == null || engineSubject != api.Subject) { engine = new PickEngine(api, Report, api.IsCharacterSelectReady); engineSubject = api.Subject; }
+                        if (engine == null || engineSubject != api.Subject) { engine = new PickEngine(api, Report, api.IsCharacterSelectReady, UpdateMap); engineSubject = api.Subject; }
                         await engine.Tick(settings, DateTimeOffset.UtcNow, ct);
                     }
                     if (autoQueueActive && DateTimeOffset.UtcNow >= nextQueuePulse)
@@ -554,6 +583,7 @@ public sealed class MainWindow : DarkForm
                         nextQueuePulse = DateTimeOffset.UtcNow.AddMilliseconds(ClientUnavailableIntervalMilliseconds);
                         queueSignals.Writer.TryWrite(false);
                     }
+                    if (!pickMonitoring && autoQueueActive) await mapObserver.Tick(ct);
                 }
                 catch (ClientUnavailableException e) { Report(e.Message); if (autoQueueActive) SetQueueStatus(e.Message); interval = ClientUnavailableIntervalMilliseconds; }
                 catch (ApiException e)
@@ -582,7 +612,7 @@ public sealed class MainWindow : DarkForm
             if (notificationChecks != null) { try { await notificationChecks; } catch (Exception) { } }
             monitor?.Dispose(); monitor = null;
             monitorTask = null; queueEngine = null; pickMonitoring = false; autoQueueActive = false;
-            SetInputEnabled(true);
+            SetInputEnabled(true); UpdateMap("");
             status.Text = "停止中"; status.ForeColor = Theme.Muted;
             statusLed?.Invalidate();
             UpdateConnectionUi();

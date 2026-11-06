@@ -1,9 +1,9 @@
 ﻿$ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 $version = ([xml](Get-Content -LiteralPath (Join-Path $projectRoot 'src/ValoAutoPick/ValoAutoPick.csproj') -Raw)).Project.PropertyGroup.Version
-$distDir = "dist/ValoAutoPick-$version-Win-x64"
+$distDir = "dist/QuickPickerPro-$version-Win-x64"
 $publishDir = "artifacts/publish-$version"
-$zipPath = "dist/ValoAutoPick-$version-Win-x64.zip"
+$zipPath = "dist/QuickPickerPro-$version-Win-x64.zip"
 Push-Location -LiteralPath $projectRoot
 try {
     dotnet run --project tests/ValoAutoPick.Tests.csproj -c Release
@@ -13,7 +13,7 @@ try {
     dotnet publish src/ValoAutoPick/ValoAutoPick.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -o $publishDir
     if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
     New-Item -ItemType Directory -Path $distDir -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $publishDir 'ValoAutoPick.exe') -Destination (Join-Path $distDir 'ValoAutoPick.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $publishDir 'QuickPickerPro.exe') -Destination (Join-Path $distDir 'QuickPickerPro.exe') -Force
     $packageRoot = Join-Path $env:USERPROFILE '.nuget\packages'
     $assetsPath = Join-Path $projectRoot 'src/ValoAutoPick/obj/project.assets.json'
     $assets = Get-Content -LiteralPath $assetsPath -Raw | ConvertFrom-Json
@@ -29,9 +29,9 @@ try {
     foreach ($entry in $licenses.GetEnumerator()) {
         Copy-Item -LiteralPath (Join-Path $packageRoot $entry.Key) -Destination (Join-Path $distDir $entry.Value) -Force
     }
-    $releaseFiles = @('ValoAutoPick.exe') + @($licenses.Values)
+    $releaseFiles = @('QuickPickerPro.exe') + @($licenses.Values)
     $releasePaths = @($releaseFiles | ForEach-Object { Join-Path $distDir $_ })
     Compress-Archive -LiteralPath $releasePaths -DestinationPath $zipPath -Force
-    Write-Host "Ready: $distDir/ValoAutoPick.exe"
+    Write-Host "Ready: $distDir/QuickPickerPro.exe"
 }
 finally { Pop-Location }

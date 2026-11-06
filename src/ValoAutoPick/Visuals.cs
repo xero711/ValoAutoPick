@@ -27,11 +27,11 @@ internal static class Theme
 
 internal static class UiMetrics
 {
-    public const float CompactScale = .7f;
+    public const float CompactScale = .8f;
     public static int Px(Control control, int value) => (int)Math.Round(value * control.DeviceDpi / 96f * CompactScale);
     // Keep text larger than the compact layout for comfortable reading.
-    public static float FontSize(float value) => Math.Max(9.5f, value * .95f);
-    public static float DisplayFontSize(float value) => Math.Max(9f, value * .8f);
+    public static float FontSize(float value) => Math.Max(10f, value);
+    public static float DisplayFontSize(float value) => Math.Max(10f, value * .9f);
 }
 
 internal static class AgentImages
@@ -102,6 +102,7 @@ public class DarkForm : Form
     {
         // Build every form in logical pixels before applying its display DPI.
         AutoScaleMode = AutoScaleMode.None;
+        Icon = AppIcon.Create();
         Font = new Font("Yu Gothic UI", 11.5f);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
@@ -484,17 +485,17 @@ public sealed class ThemedSelect : Control
         }
         picker.Opened += (_, _) =>
         {
-            // At scaled DPI the menu can size itself before its items finish
-            // scaling, leaving their right edges outside the popup.
+            // Keep the drop-down and the field the same width.
             if (picker == null) return;
-            var requiredWidth = picker.Items.Cast<ToolStripItem>().Max(item => item.GetPreferredSize(Size.Empty).Width) + picker.Padding.Horizontal;
+            picker.SuspendLayout();
             picker.AutoSize = false;
-            picker.Width = Math.Max(picker.Width, requiredWidth);
             foreach (ToolStripItem item in picker.Items)
             {
                 item.AutoSize = false;
-                item.Width = picker.ClientSize.Width;
+                item.Width = Math.Max(1, Width - picker.Padding.Horizontal - 2);
             }
+            picker.Width = Width;
+            picker.ResumeLayout(false);
             var area = Screen.FromControl(this).WorkingArea;
             if (picker.Right > area.Right) picker.Left = Math.Max(area.Left, area.Right - picker.Width);
         };
@@ -576,11 +577,8 @@ public sealed class HeroPanel : Panel
             using var edge = new SolidBrush(Theme.Role(agent.Role)); g.FillRectangle(edge, 0, 0, S(4), Height);
         }
         g.Restore(originalState);
-        var header = new Rectangle(S(29), S(27), Math.Max(S(90), Width - S(58)), S(25));
-        using var headerFont = new Font("Yu Gothic UI", UiMetrics.FontSize(10.5f), FontStyle.Bold);
         using var promptFont = new Font("Yu Gothic UI", UiMetrics.DisplayFontSize(26), FontStyle.Bold);
         using var roleFont = new Font("Yu Gothic UI", UiMetrics.FontSize(12), FontStyle.Bold);
-        TextRenderer.DrawText(g, agent == null ? "エージェント" : "設定中のエージェント", headerFont, header, Theme.Role(agent?.Role ?? ""), TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
         if (agent == null)
         {
             TextRenderer.DrawText(g, "エージェントを選択", promptFont, new Rectangle(S(29), S(74), Width - S(58), S(70)), Theme.Text,

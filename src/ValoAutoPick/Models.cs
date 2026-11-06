@@ -22,12 +22,14 @@ public static class RegionDisplay
 public sealed class Settings
 {
     public string AgentId { get; set; } = "";
+    public Dictionary<string, string> MapAgents { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public bool StartOnLaunch { get; set; } = false;
     public string Region { get; set; } = "auto";
     public bool SystemBrowserLogin { get; set; }
     public Settings Normalize()
     {
         if (!Guid.TryParse(AgentId, out _)) AgentId = "";
+        MapAgents = (MapAgents ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.Key) && Guid.TryParse(x.Value, out _)).GroupBy(x => MapCatalog.Key(x.Key), StringComparer.OrdinalIgnoreCase).Where(x => x.Key.Length > 0).ToDictionary(x => x.Key, x => x.Last().Value, StringComparer.OrdinalIgnoreCase);
         if (!new[] { "auto", "ap", "na", "eu", "kr", "br", "latam", "pbe" }.Contains(Region)) Region = "auto";
         return this;
     }
@@ -35,10 +37,10 @@ public sealed class Settings
 public static class Storage
 {
     public static string Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ValoAutoPick");
-    public static string SettingsPath => Path.Combine(Folder, "settings.json");
+    public static string SettingsPath => Path.Combine(Folder, "quickpickerpro-settings.json");
     public static Settings Load()
     {
-        try { return Parse(File.ReadAllText(SettingsPath)); }
+        try { return Parse(File.ReadAllText(File.Exists(SettingsPath) ? SettingsPath : Path.Combine(Folder, "settings.json"))); }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return new(); }
     }
     internal static Settings Parse(string json)
@@ -65,7 +67,18 @@ public static class Storage
     }
 }
 public record Player(string Subject, string CharacterID, string CharacterSelectionState);
-public record MatchSnapshot(string Id, string State, IReadOnlyList<Player> Allies);
+public record MatchSnapshot(string Id, string State, IReadOnlyList<Player> Allies, string MapId = "");
+public static class MapCatalog
+{
+    public static readonly (string Key, string Name)[] Maps = [
+        ("Ascent", "アセント"), ("Duality", "バインド"), ("Triad", "ヘイヴン"),
+        ("Bonsai", "スプリット"), ("Port", "アイスボックス"), ("Foxtrot", "ブリーズ"),
+        ("Canyon", "フラクチャー"), ("Pitt", "パール"), ("Jam", "ロータス"),
+        ("Juliett", "サンセット"), ("Infinity", "アビス"), ("Rook", "カロード"), ("Plummet", "サミット"),
+        ("HURM_Alley", "ディストリクト"), ("HURM_Bowl", "カスバ"), ("HURM_Helix", "ドリフト"), ("HURM_HighTide", "グリッチ"), ("HURM_Yard", "ピアッツァ")];
+    public static string Key(string? mapId) => (mapId ?? "").Trim().TrimEnd('/').Split('/').LastOrDefault() ?? "";
+    public static string Name(string? mapId) { var key = Key(mapId); return Maps.FirstOrDefault(m => m.Key.Equals(key, StringComparison.OrdinalIgnoreCase)).Name ?? (key.Length == 0 ? "取得中" : key); }
+}
 public record PartyQueueSnapshot(string PartyId, string State, string QueueId, bool IsLeader, int RestrictedSeconds, IReadOnlyList<string> EligibleQueues, IReadOnlyList<string> Ineligibilities, bool IsInQueue = false);
 public interface IQueueApi
 {
@@ -78,6 +91,10 @@ public interface IGameApi
 {
     string Subject { get; }
     Task<string?> GetMatchId(CancellationToken ct);
+    Task<string?> GetCoreMatchId(CancellationToken ct);
+    Task<string?> GetCoreMapId(string matchId, CancellationToken ct);
+    Task<string?> GetPartyState(CancellationToken ct);
+    Task<string?> GetLocalGameFlowState(CancellationToken ct);
     Task<MatchSnapshot> GetMatch(string matchId, CancellationToken ct);
     Task Select(string matchId, string agentId, CancellationToken ct);
     Task Lock(string matchId, string agentId, CancellationToken ct);

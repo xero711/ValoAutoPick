@@ -12,7 +12,7 @@ internal sealed class SystemBrowserAuth(string state, int port = 80)
     private const int MaxHeaderBytes = 16 * 1024;
     private const int MaxBodyBytes = 32 * 1024;
     private static readonly byte[] CallbackPage = Encoding.UTF8.GetBytes("""
-        <!doctype html><meta charset="utf-8"><title>ValBuddy</title>
+        <!doctype html><meta charset="utf-8"><title>QuickPickerPro</title>
         <p id="message">ログイン結果をアプリに送信しています…</p>
         <script>
         const result = location.hash;

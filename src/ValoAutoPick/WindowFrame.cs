@@ -71,20 +71,17 @@ internal sealed class WindowCaption : Panel
         int S(int value) => UiMetrics.Px(this, value);
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        var middle = Height / 2;
-        using (var red = new SolidBrush(Theme.Red))
+        if (owner.Icon != null)
         {
-            g.FillPolygon(red, [new Point(S(15), middle - S(7)), new Point(S(20), middle - S(7)),
-                new Point(S(14), middle + S(7)), new Point(S(9), middle + S(7))]);
-            g.FillPolygon(red, [new Point(S(22), middle - S(7)), new Point(S(27), middle - S(7)),
-                new Point(S(21), middle + S(7)), new Point(S(16), middle + S(7))]);
+            var size = S(23);
+            g.DrawIcon(owner.Icon, new Rectangle(S(8), (Height - size) / 2, size, size));
         }
-        TextRenderer.DrawText(g, "VALBUDDY", brandFont, new Rectangle(S(35), 0, S(104), Height), Theme.Text,
+        TextRenderer.DrawText(g, "QuickPickerPro", brandFont, new Rectangle(S(35), 0, S(160), Height), Theme.Text,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
-        using (var divider = new Pen(Theme.Border)) g.DrawLine(divider, S(140), S(12), S(140), Height - S(12));
-        var detail = owner.Text.Equals("ValBuddy", StringComparison.OrdinalIgnoreCase) ? "AUTO PICK" : owner.Text;
-        var available = Math.Max(0, Controls.Cast<Control>().Where(c => c.Visible).Select(c => c.Left).DefaultIfEmpty(Width).Min() - S(160));
-        TextRenderer.DrawText(g, detail, detailFont, new Rectangle(S(153), 0, available, Height), Theme.Muted,
+        using (var divider = new Pen(Theme.Border)) g.DrawLine(divider, S(196), S(12), S(196), Height - S(12));
+        var detail = owner.Text.Equals("QuickPickerPro", StringComparison.OrdinalIgnoreCase) ? "AUTO PICK" : owner.Text;
+        var available = Math.Max(0, Controls.Cast<Control>().Where(c => c.Visible).Select(c => c.Left).DefaultIfEmpty(Width).Min() - S(216));
+        TextRenderer.DrawText(g, detail, detailFont, new Rectangle(S(209), 0, available, Height), Theme.Muted,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
         using var bottom = new Pen(Theme.Border);
         g.DrawLine(bottom, 0, Height - 1, Width, Height - 1);

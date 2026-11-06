@@ -26,7 +26,7 @@ internal static class Program
         var primary = new ThemedButton { Text = "実行", Primary = true };
         var secondary = new ThemedButton { Text = "設定" };
         var toggle = new SwitchToggle("自動で監視", false);
-        var select = new ThemedSelect(["自動", "地域"]) { Size = new Size(220, 48) };
+        var select = new ThemedSelect(["自動", "アジア太平洋（東京など）とても長い選択肢"]) { Size = new Size(220, 48) };
         var tile = new AgentTile(new Agent("1dbf2edd-4729-0984-3115-daa5eed44993", "ジェット", "デュエリスト"));
         var nativeType = typeof(DarkForm).Assembly.GetType("ValoAutoPick.AnimatedNativeButton")!;
         var native = (Button)Activator.CreateInstance(nativeType, true)!;
@@ -38,12 +38,60 @@ internal static class Program
             try
             {
                 await Task.Delay(100);
+                var assembly = typeof(MatchMapPanel).Assembly;
+                foreach (var (key, _) in MapCatalog.Maps)
+                {
+                    using var asset = assembly.GetManifestResourceStream($"ValoAutoPick.Assets.Maps.{key}.jpg");
+                    Assert(asset != null, $"map artwork embedded: {key}");
+                    using var decoded = Image.FromStream(asset!);
+                    Assert(decoded.Width > 0 && decoded.Height > 0, $"map artwork readable: {key}");
+                }
+                using (var map = new MatchMapPanel { Size = new Size(500, 250) })
+                {
+                    map.SetMatch("/Game/Maps/Ascent/Ascent", "ジェット");
+                    Assert(map.AccessibleName?.Contains("アセント") == true, "matched map is presented");
+                    using var rendered = new Bitmap(map.Width, map.Height);
+                    map.DrawToBitmap(rendered, map.ClientRectangle);
+                    map.SetMatch("", "");
+                    Assert(map.AccessibleName?.Contains("待機中") == true, "map resets to waiting");
+                }
+                using (var iconResource = assembly.GetManifestResourceStream("ValoAutoPick.Assets.QuickPickerPro-transparent.ico"))
+                using (var expected = new Icon(iconResource!))
+                using (var expectedBitmap = expected.ToBitmap())
+                using (var actualBitmap = form.Icon!.ToBitmap())
+                using (var picker = new AgentPickerDialog(Array.Empty<Agent>(), null))
+                using (var pickerBitmap = picker.Icon!.ToBitmap())
+                {
+                    Assert(expectedBitmap.Size == pickerBitmap.Size && expectedBitmap.Size == actualBitmap.Size, "dialog icon size matches app icon");
+                    for (int y = 0; y < expectedBitmap.Height; y++)
+                        for (int x = 0; x < expectedBitmap.Width; x++)
+                            if (expectedBitmap.GetPixel(x,y).ToArgb() != pickerBitmap.GetPixel(x,y).ToArgb() || expectedBitmap.GetPixel(x,y).ToArgb() != actualBitmap.GetPixel(x,y).ToArgb())
+                                throw new InvalidOperationException("dialog icon differs from app icon");
+                    Console.WriteLine("PASS agent picker uses app icon");
+                }
+                using (var main = new MainWindow())
+                {
+                    var apply = typeof(MainWindow).GetMethod("ApplyAccountLabels", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                    var loginButton = (ThemedButton)typeof(MainWindow).GetField("login", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
+                    var accountLabel = (Label)typeof(MainWindow).GetField("accountInfo", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!;
+                    apply.Invoke(main, [true, "Player#1234"]);
+                    Assert(loginButton.Text == "Player#1234" && accountLabel.Text == "接続済み", "connected account shows user name and connected status");
+                    apply.Invoke(main, [false, ""]);
+                    Assert(loginButton.Text == "Riotにログイン" && accountLabel.Text == "Riotアカウント: 未接続", "signed-out labels remain available");
+                    ((NotifyIcon)typeof(MainWindow).GetField("tray", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(main)!).Dispose();
+                }
                 var caption = form.Controls.Cast<Control>().Single(c => c.GetType().Name == "WindowCaption");
                 var captionButtons = caption.Controls.Cast<Control>().ToArray();
                 await CheckMotion("primary button", primary, c => new Point(c.Width / 2, Math.Max(2, c.Height / 6)));
                 await CheckMotion("secondary button", secondary, c => new Point(c.Width / 2, Math.Max(2, c.Height / 6)));
                 await CheckMotion("switch", toggle, c => new Point(c.Width - Px(c, 11), c.Height / 2));
                 await CheckMotion("selection control", select, c => new Point(c.Width / 2, Math.Max(2, c.Height / 6)));
+                typeof(ThemedSelect).GetMethod("ShowPicker", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(select, null);
+                await Task.Delay(100);
+                var menu = (ContextMenuStrip)typeof(ThemedSelect).GetField("picker", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(select)!;
+                Assert(menu.Width == select.Width, $"selection menu matches control width ({menu.Width} == {select.Width})");
+                menu.Items[1].PerformClick();
+                Assert(select.SelectedIndex == 1, "selection menu still selects an item");
                 await CheckMotion("agent tile", tile, c => new Point(Px(c, 8), c.Height / 2));
                 await CheckMotion("relay button", native, c => new Point(c.Width / 2, Math.Max(2, c.Height / 6)));
                 foreach (var button in captionButtons)
